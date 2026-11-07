@@ -38,8 +38,11 @@ static uint16_t notify_cccd = 0u;
 static telemetry_parser_t telemetry_parser = {0};
 static uint8_t battery_percent = 0u;
 static int64_t battery_time_us = 0;
+static int16_t latest_pose[3] = {0};
+static int64_t pose_time_us = 0;
 static void scan(void);
 static int gap_event(struct ble_gap_event *event, void *arg);
+static int service_cb(uint16_t ch, const struct ble_gatt_error *error, const struct ble_gatt_svc *svc, void *arg);
 
 size_t ronin_ble_devices(char names[RONIN_SCAN_MAX][RONIN_NAME_MAX + 1u])
 {
@@ -83,6 +86,15 @@ bool ronin_ble_select(const char *name)
     portEXIT_CRITICAL(&lock);
     ESP_LOGI(TAG, "Ronin selected; awaiting advertisement");
     return true;
+}
+bool ronin_ble_pose(int16_t pose[3])
+{
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&lock);
+    bool valid = (conn != BLE_HS_CONN_HANDLE_NONE) && (pose_time_us != 0) && ((now - pose_time_us) < 3000000);
+    if(valid) { memcpy(pose, latest_pose, sizeof(latest_pose)); }
+    portEXIT_CRITICAL(&lock);
+    return valid;
 }
 bool ronin_ble_battery(uint8_t *value)
 {
@@ -129,6 +141,28 @@ void ronin_ble_invalidate(void)
     requested_yaw = 0; requested_pitch = 0; last_command_us = 0;
     portEXIT_CRITICAL(&lock);
 }
+bool ronin_ble_goto(uint32_t session, const int16_t pose[3], uint8_t duration)
+{
+    int64_t now = esp_timer_get_time();
+    uint16_t ch = 0u, h = 0u;
+    portENTER_CRITICAL(&lock);
+    bool ok = (conn != BLE_HS_CONN_HANDLE_NONE) && (write_handle != 0u) && (session == link_session) &&
+              (pose_time_us != 0) && ((now - pose_time_us) < 3000000) && (requested_yaw == 0) && (requested_pitch == 0);
+    if(ok) { ch = conn; h = write_handle; }
+    portEXIT_CRITICAL(&lock);
+    if(!ok || (duration < 5u) || (duration > 50u)) { return false; }
+    uint8_t frame[21] = {0x55,0x15,0x04,0,0x02,0x04,0,0,0x40,0x04,0x14,0,0,0,0,0,0,0x01,0x14,0,0};
+    frame[3] = duml_crc8(frame, 3u); frame[18] = duration;
+    for(unsigned i = 0u; i < 3u; i++)
+    {
+        uint16_t value = (uint16_t)pose[2u-i];
+        frame[11u+i*2u] = (uint8_t)value;
+        frame[12u+i*2u] = (uint8_t)(value >> 8u);
+    }
+    uint16_t crc = duml_crc16(frame, 19u);
+    frame[19] = (uint8_t)crc; frame[20] = (uint8_t)(crc >> 8u);
+    return ble_gattc_write_no_rsp_flat(ch, h, frame, sizeof(frame)) == 0;
+}
 void ronin_ble_stop(void)
 {
     portENTER_CRITICAL(&lock);
@@ -157,6 +191,15 @@ static int descriptor_cb(uint16_t ch, const struct ble_gatt_error *error,
     }
     else if(error->status != 0)
     { ESP_LOGW(TAG, "Notification descriptor unavailable: %d", error->status); }
+    return 0;
+}
+static int mtu_cb(uint16_t ch, const struct ble_gatt_error *err, uint16_t mtu, void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "MTU=%u status=%d", mtu, err->status);
+    ble_uuid16_t uuid = BLE_UUID16_INIT(0xfff0);
+    int rc = ble_gattc_disc_svc_by_uuid(ch, &uuid.u, service_cb, NULL);
+    if(rc != 0) { ble_gap_terminate(ch, BLE_ERR_REM_USER_CONN_TERM); }
     return 0;
 }
 static int characteristic_cb(uint16_t ch, const struct ble_gatt_error *error,
@@ -267,8 +310,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             service_start = 0u; service_end = 0u;
             notify_handle = 0u; notify_end = 0u; notify_cccd = 0u;
             memset(&telemetry_parser, 0, sizeof(telemetry_parser));
-            ble_uuid16_t uuid = BLE_UUID16_INIT(0xfff0);
-            int rc = ble_gattc_disc_svc_by_uuid(event->connect.conn_handle, &uuid.u, service_cb, NULL);
+            int rc = ble_gattc_exchange_mtu(event->connect.conn_handle, mtu_cb, NULL);
             if(rc != 0) { ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM); }
         }
         else { scan(); }
@@ -277,7 +319,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         portENTER_CRITICAL(&lock);
         connecting = false; link_session++;
         conn = BLE_HS_CONN_HANDLE_NONE; write_handle = 0u;
-        requested_yaw = 0; requested_pitch = 0; last_command_us = 0; battery_time_us = 0;
+        requested_yaw = 0; requested_pitch = 0; last_command_us = 0; battery_time_us = 0; pose_time_us = 0;
         portEXIT_CRITICAL(&lock);
         scan();
         break;
@@ -294,6 +336,13 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                     int64_t now = esp_timer_get_time();
                     portENTER_CRITICAL(&lock);
                     battery_percent = battery; battery_time_us = now;
+                    portEXIT_CRITICAL(&lock);
+                }
+                if(telemetry_parser.pose_updated)
+                {
+                    int64_t now = esp_timer_get_time();
+                    portENTER_CRITICAL(&lock);
+                    memcpy(latest_pose, telemetry_parser.pose, sizeof(latest_pose)); pose_time_us = now;
                     portEXIT_CRITICAL(&lock);
                 }
             }
@@ -325,7 +374,7 @@ static void on_reset(int reason)
 {
     portENTER_CRITICAL(&lock);
     host_synced = false; connecting = false; conn = BLE_HS_CONN_HANDLE_NONE; link_session++;
-    write_handle = 0u; requested_yaw = 0; requested_pitch = 0; last_command_us = 0; battery_time_us = 0;
+    write_handle = 0u; requested_yaw = 0; requested_pitch = 0; last_command_us = 0; battery_time_us = 0; pose_time_us = 0;
     portEXIT_CRITICAL(&lock);
     ESP_LOGW(TAG, "BLE host reset: %d", reason);
 }
@@ -338,6 +387,8 @@ static void control_task(void *arg)
     (void)arg;
     uint16_t seq = 0u;
     unsigned retry_ticks = 0u;
+    unsigned release_frames = 0u;
+    bool was_moving = false;
     for(;;)
     {
         uint16_t ch, handle;
@@ -349,10 +400,20 @@ static void control_task(void *arg)
         { requested_yaw = 0; requested_pitch = 0; }
         yaw = requested_yaw; pitch = requested_pitch;
         portEXIT_CRITICAL(&lock);
-        if((ch != BLE_HS_CONN_HANDLE_NONE) && (handle != 0u))
+        bool moving = (yaw != 0) || (pitch != 0);
+        if(moving) { was_moving = true; release_frames = 0u; }
+        else if(was_moving) { was_moving = false; release_frames = 3u; }
+        if((ch != BLE_HS_CONN_HANDLE_NONE) && (handle != 0u) && (moving || (release_frames > 0u)))
         {
             uint8_t frame[20];
             duml_speed(frame, seq++, yaw, 0, pitch);
+            if(!moving)
+            {
+                frame[17] = 0u;
+                uint16_t crc = duml_crc16(frame, 18u);
+                frame[18] = (uint8_t)crc; frame[19] = (uint8_t)(crc >> 8u);
+                release_frames--;
+            }
             int rc = ble_gattc_write_no_rsp_flat(ch, handle, frame, sizeof(frame));
             if(rc != 0) { ESP_LOGW(TAG, "BLE write failed: %d", rc); ronin_ble_stop(); }
         }

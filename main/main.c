@@ -8,6 +8,7 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "sdkconfig.h"
 #include "ronin_ble.h"
 #include "motion_parse.h"
@@ -51,7 +52,7 @@ static esp_err_t status(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    char json[128] = {0};
+    char json[192] = {0};
     uint8_t battery = 0u;
     uint32_t session = 0u;
     bool ready = false;
@@ -60,6 +61,10 @@ static esp_err_t status(httpd_req_t *req)
     { snprintf(json, sizeof(json), "{\"ble\":%s,\"battery\":%u,\"session\":%" PRIu32 "}", ready ? "true" : "false", (unsigned)battery, session); }
     else
     { snprintf(json, sizeof(json), "{\"ble\":%s,\"battery\":null,\"session\":%" PRIu32 "}", ready ? "true" : "false", session); }
+    int16_t pose[3] = {0};
+    size_t used = strlen(json);
+    if((used > 0u) && ronin_ble_pose(pose))
+    { snprintf(json + used - 1u, sizeof(json) - used + 1u, ",\"pose\":[%d,%d,%d]}", pose[0], pose[1], pose[2]); }
     return httpd_resp_sendstr(req, json);
 }
 static bool read_session(httpd_req_t *req, uint32_t *session)
@@ -144,10 +149,81 @@ static esp_err_t select_device(httpd_req_t *req)
     { httpd_resp_set_status(req, "409 Conflict"); return httpd_resp_sendstr(req, "Not available; disconnect current Ronin first"); }
     return httpd_resp_sendstr(req, "OK");
 }
+typedef struct { uint32_t magic; int16_t pose[3]; char name[RONIN_NAME_MAX+1u]; } preset_t;
+static bool preset_load(unsigned index, preset_t *preset)
+{
+    nvs_handle_t store; char key[8]; snprintf(key, sizeof(key), "p%u", index);
+    if(nvs_open("presets", NVS_READONLY, &store) != ESP_OK) { return false; }
+    size_t size = sizeof(*preset); esp_err_t err = nvs_get_blob(store, key, preset, &size); nvs_close(store);
+    return (err == ESP_OK) && (size == sizeof(*preset)) && (preset->magic == 0x52535031u) && (preset->name[RONIN_NAME_MAX] == 0);
+}
+static esp_err_t presets_get(httpd_req_t *req)
+{
+    char selected[RONIN_NAME_MAX+1u] = {0}; ronin_ble_selected(selected);
+    cJSON *root = cJSON_CreateArray(); if(root == NULL) { return ESP_FAIL; }
+    for(unsigned i=0u; i<5u; i++)
+    {
+        preset_t preset = {0};
+        if(preset_load(i, &preset) && strcmp(preset.name, selected) == 0)
+        {
+            cJSON *entry = cJSON_CreateIntArray((int[]){preset.pose[0],preset.pose[1],preset.pose[2]},3);
+            if(entry == NULL) { cJSON_Delete(root); return ESP_FAIL; } cJSON_AddItemToArray(root,entry);
+        }
+        else { cJSON_AddItemToArray(root,cJSON_CreateNull()); }
+    }
+    char *body = cJSON_PrintUnformatted(root); cJSON_Delete(root); if(body == NULL) { return ESP_FAIL; }
+    httpd_resp_set_type(req,"application/json"); httpd_resp_set_hdr(req,"Cache-Control","no-store");
+    esp_err_t rc = httpd_resp_sendstr(req,body); free(body); return rc;
+}
+static esp_err_t preset_action(httpd_req_t *req)
+{
+    uint32_t session=0u; char body[6]={0};
+    bool is_goto = strcmp(req->uri,"/preset/goto") == 0;
+    int expected = is_goto ? 4 : 1;
+    if(!read_session(req,&session) || req->content_len != expected)
+    { httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Invalid request"); return ESP_FAIL; }
+    int received = 0;
+    while(received < expected)
+    {
+        int n = httpd_req_recv(req, body + received, expected - received);
+        if(n <= 0) { return ESP_FAIL; }
+        received += n;
+    }
+    if(body[0] < '0' || body[0] > '4' || (is_goto && (body[1] != ',' || body[2] < '0' || body[2] > '9' || body[3] < '0' || body[3] > '9')))
+    { httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Invalid request"); return ESP_FAIL; }
+    unsigned index=(unsigned)(body[0]-'0'); bool ready=false; uint32_t current=0u; ronin_ble_link(&ready,&current);
+    if(!ready || current != session) { httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Link unavailable"); return ESP_FAIL; }
+    preset_t preset={0}; char selected[RONIN_NAME_MAX+1u]={0}; ronin_ble_selected(selected);
+    if(strcmp(req->uri,"/preset/save") == 0)
+    {
+        if(!ronin_ble_pose(preset.pose) || selected[0] == 0) { httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Fresh pose unavailable"); return ESP_FAIL; }
+        preset.magic=0x52535031u; strlcpy(preset.name,selected,sizeof(preset.name));
+        char key[8]; snprintf(key,sizeof(key),"p%u",index); nvs_handle_t store;
+        if(nvs_open("presets",NVS_READWRITE,&store) != ESP_OK) { httpd_resp_send_err(req,HTTPD_500_INTERNAL_SERVER_ERROR,"Storage error"); return ESP_FAIL; }
+        esp_err_t err=nvs_set_blob(store,key,&preset,sizeof(preset)); if(err == ESP_OK) { err=nvs_commit(store); } nvs_close(store);
+        if(err != ESP_OK) { httpd_resp_send_err(req,HTTPD_500_INTERNAL_SERVER_ERROR,"Storage error"); return ESP_FAIL; }
+    }
+    else if(strcmp(req->uri,"/preset/delete") == 0)
+    {
+        if(!preset_load(index,&preset) || strcmp(preset.name,selected)!=0) { httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Preset unavailable"); return ESP_FAIL; }
+        char key[8]; snprintf(key,sizeof(key),"p%u",index); nvs_handle_t store;
+        if(nvs_open("presets",NVS_READWRITE,&store) != ESP_OK) { httpd_resp_send_err(req,HTTPD_500_INTERNAL_SERVER_ERROR,"Storage error"); return ESP_FAIL; }
+        esp_err_t err=nvs_erase_key(store,key); if(err == ESP_OK) { err=nvs_commit(store); } nvs_close(store);
+        if(err != ESP_OK) { httpd_resp_send_err(req,HTTPD_500_INTERNAL_SERVER_ERROR,"Storage error"); return ESP_FAIL; }
+    }
+    else
+    {
+        uint8_t duration=(uint8_t)((body[2]-'0')*10 + body[3]-'0');
+        if(!preset_load(index,&preset) || strcmp(preset.name,selected)!=0 || preset.pose[0]<-1800 || preset.pose[0]>1800 || preset.pose[1]<-1800 || preset.pose[1]>1800 || preset.pose[2]<-1800 || preset.pose[2]>1800 || !ronin_ble_goto(session,preset.pose,duration))
+        { httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Preset or link unavailable"); return ESP_FAIL; }
+    }
+    return httpd_resp_sendstr(req,"OK");
+}
 static void start_server(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.recv_wait_timeout = 1;
+    cfg.max_uri_handlers = 11;
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &cfg));
     const httpd_uri_t page_uri = {.uri="/", .method=HTTP_GET, .handler=page};
@@ -155,11 +231,19 @@ static void start_server(void)
     const httpd_uri_t status_uri = {.uri="/status", .method=HTTP_GET, .handler=status};
     const httpd_uri_t devices_uri = {.uri="/devices", .method=HTTP_GET, .handler=devices};
     const httpd_uri_t select_uri = {.uri="/select", .method=HTTP_POST, .handler=select_device};
+    const httpd_uri_t presets_uri = {.uri="/presets", .method=HTTP_GET, .handler=presets_get};
+    const httpd_uri_t save_uri = {.uri="/preset/save", .method=HTTP_POST, .handler=preset_action};
+    const httpd_uri_t goto_uri = {.uri="/preset/goto", .method=HTTP_POST, .handler=preset_action};
+    const httpd_uri_t delete_uri = {.uri="/preset/delete", .method=HTTP_POST, .handler=preset_action};
     const httpd_uri_t move_uri = {.uri="/move", .method=HTTP_POST, .handler=move};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &page_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &status_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &script_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &move_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &presets_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &save_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &goto_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &delete_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &devices_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &select_uri));
 }

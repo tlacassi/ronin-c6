@@ -13,7 +13,7 @@ static bool parse_axis(const char *data, size_t len, size_t *pos, int16_t *value
     while((*pos < len) && (data[*pos] >= '0') && (data[*pos] <= '9'))
     {
         magnitude = magnitude * 10u + (unsigned int)(data[*pos] - '0');
-        if(magnitude > 300u)
+        if(magnitude > 600u)
         {
             return false;
         }

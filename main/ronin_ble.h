@@ -12,6 +12,8 @@ bool ronin_ble_select(const char *name);
 void ronin_ble_selected(char name[RONIN_NAME_MAX + 1u]);
 /** @brief Return the latest experimental battery value if still fresh. */
 bool ronin_ble_battery(uint8_t *value);
+/** @brief Copy a fresh pose in tenths of a degree. */
+bool ronin_ble_pose(int16_t pose[3]);
 /** @brief Start the BLE central and background control task. */
 void ronin_ble_start(void);
 /** @brief Return whether the command characteristic has been discovered. */
@@ -24,3 +26,6 @@ void ronin_ble_link(bool *ready, uint32_t *session);
 void ronin_ble_invalidate(void);
 /** @brief Clear any pending motion. */
 void ronin_ble_stop(void);
+
+/** @brief Send an experimental absolute pose when link and pose are fresh. */
+bool ronin_ble_goto(uint32_t session, const int16_t pose[3], uint8_t duration);

@@ -5,8 +5,8 @@ import http.client
 import http.server
 import urllib.parse
 
-GET_PATHS = {'/', '/gamepad.js', '/status', '/devices'}
-POST_PATHS = {'/move', '/select'}
+GET_PATHS = {'/', '/gamepad.js', '/status', '/devices', '/presets'}
+POST_PATHS = {'/move', '/select', '/preset/save', '/preset/goto', '/preset/delete'}
 
 
 def make_handler(target):
