@@ -1,3 +1,7 @@
 DUML framing and command layout derived from DJI-Ronin-Bluetooth-Connector
 https://github.com/aronesztergomi/DJI-Ronin-Bluetooth-Connector
 Copyright and MIT license: see LICENSE.upstream.
+
+Experimental battery payload interpretation informed by rs3mini-bridge:
+https://github.com/b-rutledge-code/rs3mini-bridge/blob/main/lib/telemetry.js
+The RS 3 Mini layout has not been confirmed on the RS 3.
