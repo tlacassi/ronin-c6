@@ -1,0 +1,11 @@
+menu "Ronin bridge"
+config RONIN_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+config RONIN_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default ""
+config RONIN_BLE_NAME
+    string "Exact advertised Ronin BLE name"
+    default ""
+endmenu
