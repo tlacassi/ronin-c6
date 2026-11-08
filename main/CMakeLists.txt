@@ -1,1 +1,1 @@
-idf_component_register(SRCS "main.c" "ronin_ble.c" "duml.c" "motion_parse.c" "telemetry.c" INCLUDE_DIRS "." EMBED_TXTFILES "index.html" "gamepad.js" REQUIRES bt nvs_flash esp_wifi esp_event esp_netif esp_http_server esp_timer json)
+idf_component_register(SRCS "main.c" "ronin_ble.c" "duml.c" "motion_parse.c" "telemetry.c" "zoom_motion.c" "preset_data.c" INCLUDE_DIRS "." EMBED_TXTFILES "index.html" "gamepad.js" REQUIRES bt nvs_flash esp_wifi esp_event esp_netif esp_http_server esp_timer json)

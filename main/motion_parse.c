@@ -46,3 +46,36 @@ bool motion_parse(const char *data, size_t len, int16_t *yaw, int16_t *pitch)
     *pitch = parsed_pitch;
     return true;
 }
+
+bool zoom_parse(const char *data, size_t len, uint16_t *position, uint8_t *speed)
+{
+    if((data == NULL) || (position == NULL) || (speed == NULL) || (len == 0u) || (len > 8u))
+    {
+        return false;
+    }
+    unsigned values[2] = {0u, 0u};
+    unsigned field = 0u;
+    unsigned digits = 0u;
+    for(size_t i = 0u; i < len; i++)
+    {
+        if((data[i] == ',') && (field == 0u) && (digits > 0u))
+        {
+            field = 1u;
+            digits = 0u;
+        }
+        else if((data[i] >= '0') && (data[i] <= '9'))
+        {
+            values[field] = values[field] * 10u + (unsigned)(data[i] - '0');
+            if(values[field] > (field == 0u ? 4095u : 100u)) { return false; }
+            digits++;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    if((field != 1u) || (digits == 0u) || (values[1] == 0u)) { return false; }
+    *position = (uint16_t)values[0];
+    *speed = (uint8_t)values[1];
+    return true;
+}

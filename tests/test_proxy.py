@@ -50,6 +50,24 @@ class ProxyTest(unittest.TestCase):
         origin = f'http://127.0.0.1:{self.proxy.server_port}'
         self.assertEqual(self.request('POST', '/move', '1,2', {'Origin': origin, 'X-Ronin-Session': '123'}), (200, b'123:1,2'))
 
+    def test_pairing_routes(self):
+        origin = f'http://127.0.0.1:{self.proxy.server_port}'
+        for path in ('/discover', '/resume', '/disconnect'):
+            with self.subTest(path=path):
+                self.assertEqual(self.request('POST', path, '', {'Origin': origin}), (200, b':'))
+                self.assertEqual(self.request('POST', path, '', {'Origin': 'http://example.com'})[0], 403)
+        identity = '00:17:0F:23:B9:1C:48'
+        self.assertEqual(self.request('POST', '/select', identity, {'Origin': origin}), (200, b':' + identity.encode()))
+
+    def test_zoom_routes(self):
+        origin = f'http://127.0.0.1:{self.proxy.server_port}'
+        self.assertEqual(self.request('GET', '/zoom/presets'), (200, b'bridge'))
+        for path, body in (('/zoom', '4074,5'), ('/zoom/keepalive', ''), ('/zoom/stop', '')):
+            with self.subTest(path=path):
+                self.assertEqual(self.request('POST', path, body, {'Origin': origin, 'X-Ronin-Session': '42'}),
+                                 (200, b'42:' + body.encode()))
+                self.assertEqual(self.request('POST', path, body, {'Origin': 'http://example.com'})[0], 403)
+
     def test_rejects_external_origin_host_and_unknown_path(self):
         self.assertEqual(self.request('POST', '/move', '1,2', {'Origin': 'http://example.com'})[0], 403)
         self.assertEqual(self.request('GET', '/status', headers={'Host': 'example.com'})[0], 403)

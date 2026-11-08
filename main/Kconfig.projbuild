@@ -8,4 +8,7 @@ config RONIN_WIFI_PASSWORD
 config RONIN_BLE_NAME
     string "Exact advertised Ronin BLE name"
     default ""
+config RONIN_BLE_TRACE
+    bool "Trace received DUML frames over the local serial console"
+    default n
 endmenu

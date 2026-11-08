@@ -5,3 +5,24 @@ Copyright and MIT license: see LICENSE.upstream.
 Experimental battery payload interpretation informed by rs3mini-bridge:
 https://github.com/b-rutledge-code/rs3mini-bridge/blob/main/lib/telemetry.js
 The RS 3 Mini layout has not been confirmed on the RS 3.
+
+RS 3 status-poll payloads captured from the DJI app by Joe Desbonnet:
+https://github.com/jdesbonnet/dji_rs3_control/blob/main/python/rs3/protocol/commands.py
+The poll semantics are reverse engineered; enabled only for the RS 3.
+
+RS 4 Pro 04/05 legacy layout was initially cross-checked against:
+https://github.com/o-gs/dji-firmware-tools/blob/master/comm_dissector/wireshark/dji-dumlv1-gimbal.lua
+Local Pro captures and isolated tests supersede the legacy tilt/roll offsets:
+payload offsets 20/22/4 are used for tilt/roll/pan. Independent 49-byte
+Gimbal.State capture also documents pitch/roll at 20/22:
+https://github.com/cybersecua/dji/blob/main/DUMLmap/DUMLmap.py
+Only the observed length/direction and bounded signed angles are accepted.
+The Pro absolute tilt command sign was established by local 3-degree tests.
+
+Focus Pro Motor status and addressing were established from local BLE captures:
+04/2f, sender BF, status subcommand 09, calibrated state 03, position 0..4095.
+Control-method enum and motor addressing independently cross-checked against:
+https://github.com/adinbied/RaveneyeRevEng/blob/a2122ac30de363d8faa64c96dcd3e5850bb9dcd6/decompiledAndroidRoninSource-Java/dji/midware/data/model/P3/DataGimbalFocusControl.java
+Only protocol facts were used; no vendor application code is included.
+Absolute target framing and the need for a 100 Hz stream were confirmed locally
+by a bounded 20-unit command and its position feedback on the user's motor.

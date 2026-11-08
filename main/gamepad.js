@@ -30,5 +30,64 @@
       }
     };
   }
+  function createGamepadShortcuts() {
+    let identity = null;
+    let previousFaces = [false, false, false, false];
+    let zoomArmed = false;
+    let pendingFace = null, pressedAt = 0, longFired = false;
+    const pressed = button => !!button && (button.pressed === true ||
+      (Number.isFinite(button.value) && button.value > 0.5));
+    function reset() { identity = null; previousFaces.fill(false); zoomArmed = false; pendingFace = null; longFired = false; }
+    return {
+      reset,
+      cancelZoom() { zoomArmed = false; },
+      update(visible, linkReady, pad, nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now()) {
+        const none = {preset: null, save: null, zoom: 0};
+        if (!visible || !linkReady || !pad || !pad.connected ||
+            pad.mapping !== 'standard' || !pad.buttons || pad.buttons.length < 4 || !Number.isFinite(nowMs)) {
+          reset();
+          return none;
+        }
+        // W3C standard: bottom/right/left/top face buttons, D-pad up/down.
+        const faces = [0, 1, 2, 3].map(index => pressed(pad.buttons[index]));
+        const up = pressed(pad.buttons[12]), down = pressed(pad.buttons[13]);
+        const current = String(pad.index) + ':' + String(pad.id);
+        if (identity !== current) {
+          identity = current;
+          pendingFace = null; longFired = false;
+          previousFaces = faces;
+          zoomArmed = !up && !down;
+          return none;
+        }
+        const count = faces.filter(Boolean).length;
+        const face = count === 1 ? faces.findIndex(Boolean) : -1;
+        let preset = null, save = null;
+        if (count > 1) {
+          pendingFace = null; longFired = false;
+        } else if (pendingFace !== null) {
+          const elapsed = nowMs - pressedAt;
+          if (elapsed < 0) {
+            pendingFace = null; longFired = false;
+          } else if (faces[pendingFace]) {
+            if (!longFired && elapsed >= 1000) { save = pendingFace; longFired = true; }
+          } else {
+            // Decide on release too, in case no poll occurred at the threshold.
+            if (count === 0 && !longFired) {
+              if (elapsed >= 1000) save = pendingFace;
+              else preset = pendingFace;
+            }
+            pendingFace = null; longFired = false;
+          }
+        } else if (face >= 0 && !previousFaces[face]) {
+          pendingFace = face; pressedAt = nowMs; longFired = false;
+        }
+        previousFaces = faces;
+        if (!up && !down) { zoomArmed = true; }
+        if (up && down) { zoomArmed = false; }
+        return {preset, save, zoom: zoomArmed && up !== down ? (up ? 1 : -1) : 0};
+      }
+    };
+  }
   root.createGamepadControl = createGamepadControl;
+  root.createGamepadShortcuts = createGamepadShortcuts;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

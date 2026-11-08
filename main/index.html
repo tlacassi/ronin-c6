@@ -1,66 +1,334 @@
-<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><title>Ronin C6</title>
-<style>body{background:#101821;color:#edf4fa;font:16px system-ui;text-align:center;margin:2rem auto;max-width:34rem;padding:0 1rem}h1{font-size:1.5rem}#status{color:#ffcd73}#pad{width:240px;height:240px;border-radius:50%;background:#263848;border:2px solid #87a9bf;touch-action:none;position:relative;margin:2rem auto}#knob{width:64px;height:64px;border-radius:50%;background:#54c5b7;position:absolute;left:88px;top:88px;pointer-events:none}button{background:#8c3440;color:white;border:0;border-radius:8px;padding:1rem 2rem;font-size:1rem}.preset-row{display:flex;justify-content:center;gap:.4rem;margin:.5rem}.preset-row button{padding:.5rem .8rem}.preset-row .icon{width:2.5rem;padding:.5rem}button:disabled{background:#48515a;color:#aab2b9;cursor:not-allowed}small{display:block;color:#a4b6c3;line-height:1.5;margin:1rem}</style>
-<h1>Ronin C6</h1><p id="status">Recherche du Ronin…</p><p id="pose">Position : indisponible</p><p id="battery">Batterie : indisponible</p><p>Erreurs Ronin : non disponibles</p><section><p>Ronin choisi : <strong id="selected">aucun</strong></p><select id="devices" aria-label="Appareils Bluetooth détectés"></select> <button id="selectDevice">Connecter</button><small>Allumer le Ronin et fermer l’application DJI. Les noms observés depuis le démarrage apparaissent ici ; une connexion BLE ne confirme pas un appairage DJI.</small><p id="setup"></p></section><section><h2>Positions enregistrées</h2><div id="presets"></div><p id="presetMessage"></p><label for="presetDuration">Durée de déplacement (expérimental) : <span id="presetDurationValue">2,0</span> s</label><br><input id="presetDuration" type="range" min="5" max="50" value="20" step="1"><small>Durée indicative, à vérifier sur le Ronin.</small></section><section><label><input type="checkbox" id="gamepadMode"> Activer la manette (facultatif)</label><p id="gamepadStatus">Manette désactivée</p><small>Stick gauche : panoramique et inclinaison. Maintenir L2 pour bouger. Pour armer : relâcher L2 et centrer le stick. Le joystick tactile reprend la priorité.</small></section><label for="joySpeed">Vitesse du joystick : <span id="joySpeedValue">100</span> %</label><br><input id="joySpeed" type="range" min="10" max="200" value="100" step="5"><div id="pad" aria-label="Joystick panoramique et inclinaison"><div id="knob"></div></div><button id="stop">ARRÊTER</button><small>Maintenir et déplacer le joystick. Relâcher pour arrêter.<br>Focus : non disponible. Sens des axes à vérifier au premier essai.</small>
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Ronin C6</title>
+<style>
+:root{color-scheme:dark}
+body{background:#101821;color:#edf4fa;font:16px system-ui;text-align:center;margin:2rem auto;max-width:38rem;padding:0 1rem}
+h1{font-size:1.5rem}
+h2{font-size:1.15rem}
+#status{color:#ffcd73}
+#pad{width:240px;height:240px;border-radius:50%;background:#263848;border:2px solid #87a9bf;touch-action:none;position:relative;margin:2rem auto}
+#knob{width:64px;height:64px;border-radius:50%;background:#54c5b7;position:absolute;left:88px;top:88px;pointer-events:none}
+button{background:#8c3440;color:white;border:0;border-radius:8px;padding:.85rem 1.25rem;font-size:1rem}
+button.secondary{background:#334757}
+button:disabled{background:#48515a;color:#aab2b9;cursor:not-allowed}
+select{background:#18242f;color:#edf4fa;border:1px solid #506273;border-radius:6px;padding:.55rem;max-width:100%}
+small{display:block;color:#a4b6c3;line-height:1.5;margin:1rem}
+.preset-row{display:flex;justify-content:center;gap:.4rem;margin:.5rem}
+.preset-row button{padding:.5rem .8rem}
+.preset-row .icon{width:2.5rem;padding:.5rem}
+#pairingDialog{width:min(34rem,calc(100% - 3rem));border:1px solid #526779;border-radius:14px;background:#17232e;color:#edf4fa;padding:1.2rem}
+#pairingDialog::backdrop{background:#000a}
+#pairingDialog select{width:100%;min-height:9rem}
+#pairingActions{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center}
+#pairingActions button{font-size:.9rem;padding:.65rem .8rem}
+#compatibilityNotice{font-size:.9rem}
+fieldset{border:0;padding:0;margin:0}
+#zoomPosition{width:min(26rem,90%)}
+#zoomInvert[aria-pressed="true"]{background:#26695f}
+#gamepadStatus{display:inline-block;font-size:1.5rem;filter:grayscale(1);opacity:.35}
+#gamepadStatus.connected{filter:none;opacity:1}
+</style>
+</head>
+<body>
+<h1>Ronin C6</h1>
+<p id="status">Recherche du Ronin…</p>
+<p id="pose">Position : indisponible</p>
+<p id="battery">Batterie : indisponible</p>
+<p>Erreurs Ronin : non disponibles</p>
+<section>
+  <h2>Connexion BLE</h2>
+  <p>Ronin cible : <strong id="selected">aucun</strong></p>
+  <p id="connectionState">Aucune cible enregistrée</p>
+  <p id="compatibilityNotice">RS 3 / RS 4 Pro : joystick et presets disponibles.</p>
+  <button class="secondary" id="openPairing">Choisir ou changer de Ronin</button>
+  <dialog id="pairingDialog">
+    <h2>Appareils Ronin détectés</h2>
+    <p id="scanState">Balayage BLE en cours…</p>
+    <select id="devices" size="6" aria-label="Appareils Ronin détectés"></select>
+    <p id="setup"></p>
+    <div id="pairingActions">
+      <button type="button" id="selectDevice">Connecter cette cible</button>
+      <button type="button" class="secondary" id="forgetDevice">Déconnecter / oublier la cible</button>
+      <button type="button" class="secondary" id="closePairing">Fermer</button>
+    </div>
+    <small>Le pont garde une seule cible active et une seule connexion BLE à la fois. Cette connexion directe ne réalise pas l’activation ni l’appairage DJI de première utilisation. La reconnexion automatique reprend la cible choisie.</small>
+  </dialog>
+</section>
+<section>
+  <h2>Positions enregistrées</h2>
+  <div id="presets"></div>
+  <p id="presetMessage"></p>
+  <label for="presetDuration">Durée de déplacement : <span id="presetDurationValue">2,0</span> s</label><br>
+  <input id="presetDuration" type="range" min="5" max="50" value="20" step="1">
+  <p><label for="presetZoomSpeed">Vitesse du zoom des presets : <span id="presetZoomSpeedValue">20</span> % de course/s</label><br>
+  <input id="presetZoomSpeed" type="range" min="1" max="100" value="20" step="1"></p>
+</section>
+<section>
+  <h2>Zoom</h2>
+  <p id="zoomStatus">Moteur non détecté</p>
+  <button type="button" class="secondary" id="zoomInvert" aria-pressed="false">Inverser le zoom</button>
+  <fieldset id="zoomControls" disabled>
+    <div><button type="button" class="secondary" id="zoomOut" aria-label="Dézoomer">−</button>
+    <input id="zoomPosition" type="range" min="0" max="4095" value="0" step="1" aria-label="Position du zoom">
+    <button type="button" class="secondary" id="zoomIn" aria-label="Zoomer">+</button></div>
+    <p><label for="zoomSpeed">Vitesse du zoom : <span id="zoomSpeedValue">20</span> % de course/s</label><br>
+    <input id="zoomSpeed" type="range" min="1" max="100" value="20" step="1"></p>
+    <button type="button" class="secondary" id="zoomStop">Arrêter le zoom</button>
+  </fieldset>
+  <p id="zoomMessage"></p>
+</section>
+<section>
+  <p><span id="gamepadStatus" role="img" aria-label="Manette non détectée" title="Manette non détectée">🎮</span></p>
+  <label for="gamepadSpeed">Vitesse de la manette : <span id="gamepadSpeedValue">100</span> %</label><br>
+  <input id="gamepadSpeed" type="range" min="10" max="200" value="100" step="5">
+  <small>Stick gauche : panoramique et inclinaison. Maintenir L2 pour bouger. Pour armer : relâcher L2 et centrer le stick. Le joystick tactile reprend la priorité.<br>✕ : preset 1 · ○ : preset 2 · □ : preset 3 · △ : preset 4.<br>Appui court : rappeler · Appui long (1 s) : enregistrer la position actuelle.<br>Maintenir ↑ / ↓ pour zoomer / dézoomer, sans L2.</small>
+</section>
+<label for="joySpeed">Vitesse du joystick : <span id="joySpeedValue">100</span> %</label><br>
+<input id="joySpeed" type="range" min="10" max="200" value="100" step="5">
+<div id="pad" aria-label="Joystick panoramique et inclinaison"><div id="knob"></div></div>
+<button id="stop">ARRÊTER</button>
+<small>Maintenir et déplacer le joystick. Relâcher pour arrêter.</small>
 <script src="/gamepad.js"></script>
 <script>
 'use strict';
+let zoomInverted=false;
+try{zoomInverted=localStorage.getItem('ronin.zoomInverted')==='1'}catch(e){}
+// Mirroring is its own inverse; API and saved motor coordinates stay unchanged.
+function zoomCoordinate(position){return zoomInverted?4095-position:position}
+function zoomPercent(position){return (zoomCoordinate(position)*100/4095).toFixed(1)}
 const devices=document.querySelector('#devices'),selected=document.querySelector('#selected'),setup=document.querySelector('#setup');
-async function refreshDevices(){try{let r=await fetch('/devices',{cache:'no-store'}),d=await r.json(),previous=devices.value;devices.replaceChildren();for(let name of d.devices){let o=document.createElement('option');o.value=name;o.textContent=name;devices.append(o)}if(d.devices.includes(previous))devices.value=previous;selected.textContent=d.selected||'aucun';}catch(e){setup.textContent='ESP inaccessible'}}
-document.querySelector('#selectDevice').onclick=async()=>{if(!devices.value)return;try{let r=await fetch('/select',{method:'POST',headers:{'Content-Type':'text/plain'},body:devices.value});setup.textContent=r.ok?'Sélection enregistrée, connexion en cours…':'Sélection impossible : déconnecter le Ronin actuel et réessayer';await refreshDevices()}catch(e){setup.textContent='ESP inaccessible'}};refreshDevices();setInterval(refreshDevices,3000);
+const pairingDialog=document.querySelector('#pairingDialog'),connectionState=document.querySelector('#connectionState');
+const compatibilityNotice=document.querySelector('#compatibilityNotice'),scanState=document.querySelector('#scanState');
+let targetId='',targetModel='';
+function describeModel(model){
+  if(model==='RS 3')return 'RS 3 — joystick et presets disponibles';
+  if(model==='RS 4 Pro')return 'RS 4 Pro — joystick et presets disponibles';
+  if(model==='RS 4')return 'RS 4 — commandes indisponibles';
+  if(model==='RS 5')return 'RS 5 — commandes indisponibles';
+  return 'Modèle non identifié';
+}
+async function refreshDevices(){
+  try{
+    const r=await fetch('/devices',{cache:'no-store'}),d=await r.json(),previous=devices.value;
+    const list=Array.isArray(d.devices)?d.devices:[];
+    devices.replaceChildren();
+    for(const item of list){
+      const option=document.createElement('option');
+      option.value=item.id||'';
+      option.disabled=item.visible!==true;
+      const model=item.model||'Modèle inconnu';
+      const markers=[model,item.visible?'visible':'hors de portée',Number.isFinite(item.rssi)?String(item.rssi)+' dBm':null,item.target?'cible mémorisée':null,item.connected?'connecté':null].filter(Boolean);
+      option.textContent=(item.name||'Ronin')+' — '+markers.join(' · ');
+      devices.append(option);
+    }
+    const previousTargetId=targetId;
+    targetId=d.targetId||'';
+    if(targetId!==previousTargetId)refreshPresets();
+    targetModel=(list.find(item=>item.id===targetId)||{}).model||'';
+    if(list.some(item=>item.id===previous&&item.visible))devices.value=previous;
+    else if(targetId&&list.some(item=>item.id===targetId&&item.visible))devices.value=targetId;
+    else if(list.some(item=>item.visible))devices.value=list.find(item=>item.visible).id;
+    else devices.selectedIndex=-1;
+    document.querySelector('#selectDevice').disabled=!list.some(item=>item.id===devices.value&&item.visible);
+    selected.textContent=d.targetName?(targetId?d.targetName+' · '+targetId:d.targetName):'aucun';
+    connectionState.textContent=d.ready&&!d.controlEnabled?'BLE connecté ; commandes indisponibles pour ce modèle':
+      d.ready?'BLE connecté, service de commande prêt':
+      d.connected?'Ronin BLE connecté, initialisation en cours':
+      targetId?'Cible mémorisée — recherche/reconnexion automatique':'Aucune cible enregistrée — ouvre la liste pour en choisir une';
+    compatibilityNotice.textContent=describeModel(targetModel);
+    const visibleCount=list.filter(item=>item.visible===true).length;
+    scanState.textContent=visibleCount?visibleCount+' Ronin(s) visible(s) ; les appareils hors de portée restent affichés comme repères.':'Aucun Ronin visible — allume le stabilisateur et attends le prochain scan.';
+    document.querySelector('#forgetDevice').disabled=!d.targetName&&!d.connected;
+  }catch(e){
+    setup.textContent='ESP inaccessible — nouvelle tentative automatique';
+    connectionState.textContent='Pont ESP inaccessible';
+    scanState.textContent='Scan indisponible : ESP inaccessible';
+  }
+}
+document.querySelector('#openPairing').onclick=()=>{
+  if(typeof pairingDialog.showModal==='function')pairingDialog.showModal();
+  else pairingDialog.open=true;
+  setup.textContent='Scan BLE en cours ; la connexion actuelle sera interrompue pendant la recherche.';
+  fetch('/discover',{method:'POST'}).then(r=>{if(!r.ok)throw new Error();return refreshDevices()}).catch(()=>{setup.textContent='Impossible de lancer le scan BLE'});
+};
+document.querySelector('#closePairing').onclick=()=>pairingDialog.close();
+pairingDialog.addEventListener('close',()=>{fetch('/resume',{method:'POST'}).then(refreshDevices).catch(()=>{setup.textContent='ESP inaccessible'})});
+devices.onchange=()=>{document.querySelector('#selectDevice').disabled=!Array.from(devices.options).some(option=>option.value===devices.value&&!option.disabled)};
+document.querySelector('#selectDevice').onclick=async()=>{
+  if(!devices.value){setup.textContent='Sélectionne un Ronin détecté';return}
+  try{
+    const r=await fetch('/select',{method:'POST',headers:{'Content-Type':'text/plain'},body:devices.value});
+    setup.textContent=r.ok?'Cible enregistrée. Déconnexion de l’ancienne puis connexion à cette adresse BLE…':'Cible absente du dernier scan — actualise la liste';
+    await refreshDevices();
+  }catch(e){setup.textContent='ESP inaccessible'}
+};
+document.querySelector('#forgetDevice').onclick=async()=>{
+  try{
+    const r=await fetch('/disconnect',{method:'POST'});
+    setup.textContent=r.ok?'Ronin déconnecté et cible oubliée. Le scan BLE continue.':'Impossible d’oublier la cible';
+    neutral();
+    await refreshDevices();
+  }catch(e){setup.textContent='ESP inaccessible'}
+};
+refreshDevices();
+setInterval(refreshDevices,3000);
+
 const presetBox=document.querySelector('#presets'),presetMessage=document.querySelector('#presetMessage');
-let presetValues=[null,null,null,null,null];
-async function refreshPresets(){try{const r=await fetch('/presets',{cache:'no-store'});if(r.ok){presetValues=await r.json();renderPresets()}}catch(e){}}
-function renderPresets(){presetBox.replaceChildren();for(let i=0;i<5;i++){const row=document.createElement('p'),go=document.createElement('button'),save=document.createElement('button'),del=document.createElement('button');row.className='preset-row';go.textContent=`Preset ${i+1}`;go.disabled=!presetValues[i];go.onclick=()=>presetAction(i,'goto');save.textContent='💾';save.className='icon';save.title=`Enregistrer preset ${i+1}`;save.setAttribute('aria-label',save.title);save.onclick=()=>presetAction(i,'save');del.textContent='🗑';del.className='icon';del.title=`Supprimer preset ${i+1}`;del.setAttribute('aria-label',del.title);del.disabled=!presetValues[i];del.onclick=()=>presetAction(i,'delete');row.append(go,save,del);presetBox.append(row)}}
-async function presetAction(i,action){if(!linkReady||session===null||Date.now()-lastStatus>1800){presetMessage.textContent='Ronin indisponible';return}if(action==='delete'&&!confirm(`Supprimer le preset ${i+1} ?`))return;neutral();try{const duration=document.querySelector('#presetDuration').value.padStart(2,'0');const r=await fetch('/preset/'+action,{method:'POST',headers:{'Content-Type':'text/plain','X-Ronin-Session':String(session)},body:action==='goto'?`${i},${duration}`:String(i)});presetMessage.textContent=r.ok?(action==='save'?'Position enregistrée':action==='delete'?'Preset supprimé':'Commande envoyée'):'Position ou liaison indisponible';if(action!=='goto'&&r.ok)await refreshPresets()}catch(e){presetMessage.textContent='ESP inaccessible'}}
+const presetSymbols=['✕','○','□','△'];
+let presetValues=[null,null,null,null,null],presetZoomValues=[null,null,null,null,null];
+async function refreshPresets(){try{const requestedTarget=targetId;const [r,z]=await Promise.all([fetch('/presets',{cache:'no-store'}),fetch('/zoom/presets',{cache:'no-store'})]);const values=r.ok?await r.json():null,zoomValues=z.ok?await z.json():null;if(requestedTarget!==targetId)return;if(values){presetValues=values;presetZoomValues=Array.isArray(zoomValues)?zoomValues:[null,null,null,null,null];renderPresets()}}catch(e){}}
+function renderPresets(){presetBox.replaceChildren();for(let i=0;i<5;i++){const row=document.createElement('p'),go=document.createElement('button'),save=document.createElement('button'),del=document.createElement('button');row.className='preset-row';go.textContent=(presetSymbols[i]?presetSymbols[i]+' ':'')+'Preset '+(i+1)+(Number.isInteger(presetZoomValues[i])?' · 🔍 '+zoomPercent(presetZoomValues[i])+' %':'');go.disabled=!presetValues[i];go.onclick=()=>presetAction(i,'goto');save.textContent='💾';save.className='icon';save.title='Enregistrer preset '+(i+1);save.setAttribute('aria-label',save.title);save.onclick=()=>presetAction(i,'save');del.textContent='🗑';del.className='icon';del.title='Supprimer preset '+(i+1);del.setAttribute('aria-label',del.title);del.disabled=!presetValues[i];del.onclick=()=>presetAction(i,'delete');row.append(go,save,del);presetBox.append(row)}}
+async function presetAction(i,action,fromGamepad=false){if(!linkReady||session===null||Date.now()-lastStatus>1800){presetMessage.textContent='Ronin indisponible ou commandes désactivées';return}if(action==='delete'&&!confirm('Supprimer le preset '+(i+1)+' ?'))return;if(action==='goto')cancelDpadZoom(!fromGamepad);const requestedSession=session;const stopped=await neutral();if(!stopped||session!==requestedSession||!linkReady||active||x!==0||y!==0){presetMessage.textContent='Arrêt ou liaison indisponible';return}try{const duration=document.querySelector('#presetDuration').value.padStart(2,'0');const r=await fetch('/preset/'+action,{method:'POST',headers:{'Content-Type':'text/plain','X-Ronin-Session':String(session)},body:action==='goto'?[i,duration,document.querySelector('#presetZoomSpeed').value.padStart(3,'0')].join(','):String(i)});presetMessage.textContent=r.ok?(action==='save'?'Position enregistrée':action==='delete'?'Preset supprimé':'Commande envoyée'):'Position ou liaison indisponible';if(action==='goto'&&r.ok&&zoomReady&&Number.isInteger(presetZoomValues[i])){zoomOwned=true;zoomAcceptedAt=Date.now()}if(action!=='goto'&&r.ok)await refreshPresets()}catch(e){presetMessage.textContent='ESP inaccessible'}}
 document.querySelector('#presetDuration').oninput=e=>document.querySelector('#presetDurationValue').textContent=(Number(e.target.value)/10).toFixed(1).replace('.',',');document.querySelector('#joySpeed').oninput=e=>document.querySelector('#joySpeedValue').textContent=e.target.value;
+document.querySelector('#presetZoomSpeed').oninput=e=>document.querySelector('#presetZoomSpeedValue').textContent=e.target.value;
+document.querySelector('#zoomSpeed').oninput=e=>document.querySelector('#zoomSpeedValue').textContent=e.target.value;
+document.querySelector('#gamepadSpeed').oninput=e=>document.querySelector('#gamepadSpeedValue').textContent=e.target.value;
 renderPresets();refreshPresets();
 const pad=document.querySelector('#pad'),knob=document.querySelector('#knob'),label=document.querySelector('#status');
-const mode=document.querySelector('#gamepadMode'),gamepadStatus=document.querySelector('#gamepadStatus'),control=createGamepadControl();
-let active=false,x=0,y=0,inflight=false,session=null,linkReady=false,lastStatus=0,focused=true,statusBusy=false,gamepadMoving=false;
+const gamepadStatus=document.querySelector('#gamepadStatus'),control=createGamepadControl(),shortcuts=createGamepadShortcuts();
+let active=false,x=0,y=0,inflight=false,session=null,linkReady=false,lastStatus=0,focused=true,statusBusy=false,gamepadMoving=false,motionFlight=null;
+const zoomSlider=document.querySelector('#zoomPosition'),zoomMessage=document.querySelector('#zoomMessage'),zoomInvert=document.querySelector('#zoomInvert');
+let lastZoomStatus=null;
+let dpadZoomActive=false,lastDpadDirection=0;
+let zoomReady=false,zoomOwned=false,zoomDragging=false,zoomInflight=false,zoomPending=null,zoomAcceptedAt=0;
+function resetZoomClient(){shortcuts.reset();dpadZoomActive=false;lastDpadDirection=0;zoomOwned=false;zoomPending=null;zoomReady=false;zoomDragging=false;document.querySelector('#zoomControls').disabled=true}
+async function pumpZoom(){
+  if(zoomInflight||!zoomPending)return;
+  const command=zoomPending;zoomPending=null;zoomInflight=true;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),800);
+  try{
+    const r=await fetch(command.stop?'/zoom/stop':'/zoom',{method:'POST',headers:{'Content-Type':'text/plain','X-Ronin-Session':String(command.session)},body:command.stop?'':[command.position,command.speed].join(','),signal:controller.signal});
+    if(command.session===session){
+      if(r.ok&&command.stop)zoomOwned=false;
+      if(r.ok&&!command.stop){zoomOwned=true;zoomAcceptedAt=Date.now();zoomMessage.textContent='Cible : '+zoomPercent(command.position)+' %'}
+      else if(!r.ok){zoomOwned=false;zoomMessage.textContent='Moteur ou liaison indisponible'}
+    }
+  }catch(e){zoomOwned=false;zoomMessage.textContent='ESP inaccessible'}
+  finally{clearTimeout(timer);zoomInflight=false;if(zoomPending)pumpZoom()}
+}
+function cancelDpadZoom(resetKeys=true){
+  if(dpadZoomActive)stopZoom();
+  dpadZoomActive=false;lastDpadDirection=0;if(resetKeys)shortcuts.reset();else shortcuts.cancelZoom();
+}
+function requestZoom(position,fromGamepad=false){
+  if(!zoomReady||session===null||Date.now()-lastStatus>1800||!focused||document.hidden)return;
+  if(!fromGamepad)cancelDpadZoom();
+  position=Math.max(0,Math.min(4095,Math.round(position)));zoomSlider.value=String(zoomCoordinate(position));
+  zoomPending={position,speed:Number(document.querySelector('#zoomSpeed').value),session};pumpZoom();
+}
+function stopZoom(){
+  dpadZoomActive=false;zoomOwned=false;zoomMessage.textContent='';
+  if(session!==null){zoomPending={stop:true,session};pumpZoom()}else zoomPending=null;
+}
+function stopAll(){neutral();stopZoom();shortcuts.reset();lastDpadDirection=0}
+zoomSlider.onpointerdown=()=>{zoomDragging=true};
+zoomSlider.onpointerup=()=>{zoomDragging=false};zoomSlider.onpointercancel=()=>{zoomDragging=false};
+zoomSlider.oninput=e=>requestZoom(zoomCoordinate(Number(e.target.value)));
+document.querySelector('#zoomIn').onclick=()=>requestZoom(zoomCoordinate(Number(zoomSlider.value)+41));
+document.querySelector('#zoomOut').onclick=()=>requestZoom(zoomCoordinate(Number(zoomSlider.value)-41));
+document.querySelector('#zoomStop').onclick=stopZoom;
+function renderZoomDirection(){
+  zoomInvert.textContent=zoomInverted?'Zoom inversé':'Inverser le zoom';
+  zoomInvert.setAttribute('aria-pressed',String(zoomInverted));
+  zoomInvert.title=zoomInverted?'Sens actuel : inversé':'Sens actuel : normal';
+}
+zoomInvert.onclick=()=>{
+  const motorPosition=zoomCoordinate(Number(zoomSlider.value));
+  stopZoom();cancelDpadZoom();zoomDragging=false;
+  zoomInverted=!zoomInverted;
+  try{localStorage.setItem('ronin.zoomInverted',zoomInverted?'1':'0')}catch(e){}
+  zoomSlider.value=String(zoomCoordinate(motorPosition));
+  renderZoomDirection();renderPresets();
+  if(lastZoomStatus)updateZoom(lastZoomStatus);
+};
+renderZoomDirection();
+setInterval(()=>{
+  if(!zoomOwned||!zoomReady||session===null||!focused||document.hidden)return;
+  fetch('/zoom/keepalive',{method:'POST',headers:{'X-Ronin-Session':String(session)},body:''}).then(r=>{if(!r.ok)zoomOwned=false}).catch(()=>{zoomOwned=false});
+},500);
+function updateZoom(status){
+  lastZoomStatus=status;
+  const z=status.zoom||{},position=z.position;
+  const known=z.present===true&&z.calibrated===true&&Number.isInteger(position)&&position>=0&&position<=4095;
+  zoomReady=linkReady&&z.available===true&&known;
+  document.querySelector('#zoomControls').disabled=!zoomReady;
+  document.querySelector('#zoomStatus').textContent=known?'Zoom : '+zoomPercent(position)+' % · moteur '+position+'/4095':z.present?'Moteur à calibrer':'Moteur non détecté';
+  if(known&&!zoomDragging&&!zoomInflight&&!zoomPending)zoomSlider.value=String(zoomCoordinate(z.moving&&Number.isInteger(z.target)&&z.target>=0&&z.target<=4095?z.target:position));
+  if(!z.moving&&!zoomInflight&&!zoomPending&&Date.now()-zoomAcceptedAt>500)zoomOwned=false;
+  if(!zoomReady){zoomOwned=false;zoomPending=null}
+  if(z.error&&z.error!=='unavailable')zoomMessage.textContent='Déplacement du zoom interrompu';
+}
 function resetLocal(){active=false;x=0;y=0;gamepadMoving=false;control.reset();knob.style.transform='translate(0px,0px)'}
-function neutral(){resetLocal();send()}
-async function send(){
-  if(inflight || session===null)return;
+function neutral(){resetLocal();return send()}
+function send(){
+  if(motionFlight)return motionFlight;
+  if(session===null)return Promise.resolve(false);
   inflight=true;const sentX=x,sentY=y,sentSession=session,controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),800);
-  try{let r=await fetch('/move',{method:'POST',headers:{'Content-Type':'text/plain','X-Ronin-Session':String(sentSession)},body:`${sentX},${sentY}`,cache:'no-store',signal:controller.signal});if(!r.ok)resetLocal()}
-  catch(e){resetLocal()}
-  finally{clearTimeout(timer);inflight=false;if((sentX!==x||sentY!==y||sentSession!==session)&&session!==null)send()}
+  motionFlight=(async()=>{
+    let accepted=false;
+    try{const r=await fetch('/move',{method:'POST',headers:{'Content-Type':'text/plain','X-Ronin-Session':String(sentSession)},body:[sentX,sentY].join(','),cache:'no-store',signal:controller.signal});accepted=r.ok;if(!r.ok)resetLocal()}
+    catch(e){resetLocal()}
+    finally{clearTimeout(timer);inflight=false;motionFlight=null}
+    if((sentX!==x||sentY!==y||sentSession!==session)&&session!==null)return send();
+    return accepted;
+  })();
+  return motionFlight;
 }
-function position(e){let r=pad.getBoundingClientRect(),dx=e.clientX-(r.left+r.width/2),dy=e.clientY-(r.top+r.height/2),scale=Math.min(1,88/Math.hypot(dx,dy));dx*=scale;dy*=scale;knob.style.transform=`translate(${dx}px,${dy}px)`;let speed=Number(document.querySelector('#joySpeed').value)/100;x=Math.round(dx/88*300*speed);y=Math.round(-dy/88*300*speed)}
-pad.onpointerdown=e=>{if(!linkReady || Date.now()-lastStatus>1800)return;mode.checked=false;control.reset();active=true;pad.setPointerCapture(e.pointerId);position(e);send()};
+function position(e){let r=pad.getBoundingClientRect(),dx=e.clientX-(r.left+r.width/2),dy=e.clientY-(r.top+r.height/2),scale=Math.min(1,88/Math.hypot(dx,dy));dx*=scale;dy*=scale;knob.style.transform='translate('+dx+'px,'+dy+'px)';let speed=Number(document.querySelector('#joySpeed').value)/100;x=Math.round(dx/88*300*speed);y=Math.round(-dy/88*300*speed)}
+pad.onpointerdown=e=>{if(!linkReady||Date.now()-lastStatus>1800)return;cancelDpadZoom();control.reset();active=true;pad.setPointerCapture(e.pointerId);position(e);send()};
 pad.onpointermove=e=>{if(active)position(e)};pad.onpointerup=neutral;pad.onpointercancel=neutral;pad.onlostpointercapture=neutral;
-document.querySelector('#stop').onclick=neutral;
-mode.onchange=()=>{neutral();gamepadStatus.textContent=mode.checked?'Relâcher L2 et centrer le stick':'Manette désactivée'};
-window.addEventListener('blur',()=>{focused=false;neutral()});window.addEventListener('focus',()=>{focused=true});
-document.addEventListener('visibilitychange',()=>{if(document.hidden)neutral()});
-window.addEventListener('gamepaddisconnected',()=>{if(mode.checked)neutral()});
+document.querySelector('#stop').onclick=stopAll;
+window.addEventListener('blur',()=>{focused=false;stopAll()});window.addEventListener('focus',()=>{focused=true});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopAll()});
+window.addEventListener('gamepaddisconnected',()=>{cancelDpadZoom();if(gamepadMoving)neutral();else control.reset()});
 setInterval(()=>{
-  if(active){send();return}
-  if(!mode.checked){gamepadStatus.textContent='Manette désactivée';return}
   let pads=[];try{if(typeof navigator.getGamepads==='function')pads=Array.from(navigator.getGamepads()).filter(Boolean)}catch(e){}
-  let candidate=pads.find(p=>p.mapping==='standard')||null;
-  let goodLink=linkReady && Date.now()-lastStatus<1800;
-  let state=control.update(true,!document.hidden && focused,goodLink,candidate);
-  if(!candidate)gamepadStatus.textContent='Manette non détectée ou navigateur incompatible ; appuyer sur un bouton et vérifier HTTPS';
-  else if(!goodLink)gamepadStatus.textContent='Ronin indisponible';
-  else if(!state.armed)gamepadStatus.textContent='Relâcher L2 et centrer le stick';
-  else gamepadStatus.textContent='Manette prête — maintenir L2';
-  let speed=Number(document.querySelector('#joySpeed').value)/100;x=Math.round(state.yaw*speed);y=Math.round(state.pitch*speed);
+  let candidate=pads.find(p=>p.connected&&p.mapping==='standard')||null;
+  gamepadStatus.className=candidate?'connected':'';
+  gamepadStatus.title=candidate?'Manette détectée':'Manette non détectée';
+  gamepadStatus.setAttribute('aria-label',gamepadStatus.title);
+  if(active){shortcuts.reset();control.reset();send();return}
+  let goodLink=linkReady&&Date.now()-lastStatus<1800;
+  const buttons=shortcuts.update(!document.hidden&&focused,goodLink,candidate);
+  const presetIndex=buttons.save!==null?buttons.save:buttons.preset;
+  if(presetIndex!==null){
+    if(buttons.save!==null||presetValues[presetIndex]){
+      cancelDpadZoom(false);presetAction(presetIndex,buttons.save!==null?'save':'goto',true);return;
+    }
+    presetMessage.textContent='Preset '+(presetIndex+1)+' non enregistré';
+  }
+  if(buttons.zoom!==lastDpadDirection){
+    if(dpadZoomActive)stopZoom();
+    lastDpadDirection=buttons.zoom;
+    if(buttons.zoom!==0&&zoomReady){
+      dpadZoomActive=true;requestZoom(zoomCoordinate(buttons.zoom>0?4095:0),true);
+    }
+  }
+  if(dpadZoomActive&&!zoomReady){stopZoom();}
+  let state=control.update(true,!document.hidden&&focused,goodLink,candidate);
+  let speed=Number(document.querySelector('#gamepadSpeed').value)/100;x=Math.round(state.yaw*speed);y=Math.round(state.pitch*speed);
   if(state.moving||gamepadMoving)send();
   gamepadMoving=state.moving;
 },100);
 async function refreshStatus(){
   if(statusBusy)return;statusBusy=true;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),900);
-  try{let r=await fetch('/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error();let s=await r.json();
+  try{
+    let r=await fetch('/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error();let s=await r.json();
     if(!Number.isInteger(s.session)||s.session<0||s.session>4294967295)throw new Error();
-    if(session!==s.session||!s.ble){resetLocal()}
-    session=s.session;linkReady=s.ble===true;lastStatus=Date.now();
-    document.querySelector('#pose').textContent=Array.isArray(s.pose)?`Tilt ${(s.pose[0]/10).toFixed(1)}°, roll ${(s.pose[1]/10).toFixed(1)}°, pan ${(s.pose[2]/10).toFixed(1)}°`:'Position : indisponible';
-    label.textContent=linkReady?'BLE connecté — commandes sans retour de confirmation':'Ronin déconnecté — reconnexion en cours';
-    document.querySelector('#battery').textContent=s.battery===null?'Batterie : indisponible':`Batterie : ${s.battery} %`;
-  }catch(e){linkReady=false;session=null;resetLocal();document.querySelector('#pose').textContent='Position : indisponible';label.textContent='ESP inaccessible — nouvelle tentative automatique';document.querySelector('#battery').textContent='Batterie : indisponible'}
+    if(session!==s.session||!s.ble||!s.controlEnabled){resetLocal();resetZoomClient()}
+    session=s.session;linkReady=s.ble===true&&s.controlEnabled===true;lastStatus=Date.now();updateZoom(s);
+    document.querySelector('#pose').textContent=Array.isArray(s.pose)?'Tilt '+(s.pose[0]/10).toFixed(1)+'°, roll '+(s.pose[1]/10).toFixed(1)+'°, pan '+(s.pose[2]/10).toFixed(1)+'°':'Position : indisponible';
+    label.textContent=linkReady?'BLE connecté':s.ble?'BLE connecté — commandes indisponibles pour ce modèle':'Ronin déconnecté — reconnexion en cours';
+    document.querySelector('#battery').textContent=s.battery===null?'Batterie : indisponible':'Batterie : '+s.battery+' %';
+  }catch(e){linkReady=false;session=null;resetLocal();resetZoomClient();document.querySelector('#zoomStatus').textContent='Moteur indisponible';document.querySelector('#pose').textContent='Position : indisponible';label.textContent='ESP inaccessible — nouvelle tentative automatique';document.querySelector('#battery').textContent='Batterie : indisponible'}
   finally{clearTimeout(timer);statusBusy=false}
 }
 refreshStatus();setInterval(refreshStatus,1000);
-</script></html>
+</script>
+</body>
+</html>
