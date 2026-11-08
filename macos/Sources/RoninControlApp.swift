@@ -267,6 +267,7 @@ private struct PathRow: View {
 
 private struct ControlView: View {
     @StateObject private var discovery = RoninDiscovery()
+    @StateObject private var gamepadRelay = MacGamepadRelay()
     @State private var address = "http://ronin-c6.local"
     @State private var loadedURL = URL(string: "http://ronin-c6.local")!
     @State private var reloadToken = UUID()
@@ -283,8 +284,18 @@ private struct ControlView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer()
+                Spacer(minLength: 12)
+                Label(
+                    gamepadRelay.controllerName,
+                    systemImage: gamepadRelay.isConnected ? "gamecontroller.fill" : "gamecontroller"
+                )
+                .font(.caption.weight(.medium))
+                .foregroundStyle(gamepadRelay.isConnected ? .green : .secondary)
+                .help(gamepadRelay.linkMessage)
             }
+            Text(gamepadRelay.linkMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 TextField("http://ronin-c6.local ou adresse IP", text: $address)
                     .textFieldStyle(.roundedBorder)
@@ -302,7 +313,7 @@ private struct ControlView: View {
                 .help("Recharger la page et rechercher l’ESP")
             }
 
-            LocalWebView(url: loadedURL, reloadToken: reloadToken)
+            LocalWebView(url: loadedURL, reloadToken: reloadToken, relay: gamepadRelay)
                 .background(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay {
@@ -313,6 +324,16 @@ private struct ControlView: View {
         .padding(18)
         .task {
             await discovery.run()
+        }
+        .onAppear {
+            gamepadRelay.setBaseURL(loadedURL)
+            gamepadRelay.start()
+        }
+        .onDisappear {
+            gamepadRelay.stop()
+        }
+        .onChange(of: loadedURL) { newURL in
+            gamepadRelay.setBaseURL(newURL)
         }
     }
 
@@ -331,31 +352,56 @@ private struct ControlView: View {
 private struct LocalWebView: NSViewRepresentable {
     let url: URL
     let reloadToken: UUID
+    let relay: MacGamepadRelay
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(relay: relay) }
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        let userContentController = WKUserContentController()
+        userContentController.addUserScript(WKUserScript(
+            source: "window.__RONIN_NATIVE_APP__ = true;",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+        userContentController.add(context.coordinator, name: "roninNative")
+        configuration.userContentController = userContentController
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
+        webView.navigationDelegate = context.coordinator
         context.coordinator.load(url, token: reloadToken, in: webView)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.relay = relay
         context.coordinator.load(url, token: reloadToken, in: webView)
     }
 
-    final class Coordinator {
+    @MainActor
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+        weak var relay: MacGamepadRelay?
         private var lastURL: URL?
         private var lastToken: UUID?
+
+        init(relay: MacGamepadRelay) {
+            self.relay = relay
+        }
 
         func load(_ url: URL, token: UUID, in webView: WKWebView) {
             guard lastURL != url || lastToken != token else { return }
             lastURL = url
             lastToken = token
             webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10))
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            relay?.receiveWebMessage(message.body)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            relay?.attach(webView)
         }
     }
 }

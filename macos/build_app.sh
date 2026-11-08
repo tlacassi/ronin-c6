@@ -2,7 +2,7 @@
 set -euo pipefail
 
 MACOS_DIR="$(cd "$(dirname "$0")" && pwd)"
-SOURCE="$MACOS_DIR/Sources/RoninControlApp.swift"
+SOURCE_FILES=("$MACOS_DIR"/Sources/*.swift)
 APP_DIR="$MACOS_DIR/build/ESP Ronin Control.app"
 CONTENTS="$APP_DIR/Contents"
 SDK_PATH="$(xcrun --show-sdk-path)"
@@ -22,9 +22,10 @@ for ARCH in arm64 x86_64; do
 		-parse-as-library \
 		-O \
 		-framework AppKit \
+		-framework GameController \
 		-framework SwiftUI \
 		-framework WebKit \
-		"$SOURCE" \
+		"${SOURCE_FILES[@]}" \
 		-o "$CONTENTS/MacOS/RoninControl.$ARCH"
 done
 

@@ -28,6 +28,12 @@ L’onglet **Contrôler le Ronin** vérifie toutes les quatre secondes `http://r
 
 L’application ne crée pas de réseau Wi‑Fi et ne remplace pas l’application DJI pour l’appairage initial. Le Mac et l’ESP doivent rejoindre le même réseau pour accéder à l’interface de commande. Le firmware ESP-IDF et les outils Espressif restent nécessaires pour reconstruire et flasher.
 
+## Manette en arrière-plan
+
+Quand l’onglet **Contrôler le Ronin** est ouvert dans l’app, macOS GameController reçoit les entrées DualSense ou Xbox même si une autre app passe au premier plan. Le relais natif envoie directement au pont ESP les axes, presets (appui court pour rappeler, appui long pour enregistrer) et zoom par la croix directionnelle. Il reprend les vitesses, la durée des presets et l’inversion du zoom choisies dans la page intégrée. La gâchette gauche doit être relâchée, stick centré, puis maintenue pour piloter.
+
+Le relais s’arrête si l’onglet de contrôle est fermé, si la manette est déconnectée ou si le Ronin perd sa liaison. macOS peut demander l’autorisation Bluetooth au premier usage. L’app doit rester ouverte pour le pilotage en arrière-plan.
+
 ## Limites de cette V1
 
 - Le flash USB est réalisé avec `idf.py`, pas avec un firmware `.bin` téléchargé depuis Internet.

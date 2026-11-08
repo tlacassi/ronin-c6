@@ -100,6 +100,7 @@ try{zoomInverted=localStorage.getItem('ronin.zoomInverted')==='1'}catch(e){}
 // Mirroring is its own inverse; API and saved motor coordinates stay unchanged.
 function zoomCoordinate(position){return zoomInverted?4095-position:position}
 function zoomPercent(position){return (zoomCoordinate(position)*100/4095).toFixed(1)}
+function publishNativeSettings(){if(!window.__RONIN_NATIVE_APP__)return;const bridge=window.webkit?.messageHandlers?.roninNative;if(!bridge)return;bridge.postMessage({type:'settings',gamepadSpeed:Number(document.querySelector('#gamepadSpeed').value),presetDuration:Number(document.querySelector('#presetDuration').value),presetZoomSpeed:Number(document.querySelector('#presetZoomSpeed').value),zoomSpeed:Number(document.querySelector('#zoomSpeed').value),zoomInverted})}
 const devices=document.querySelector('#devices'),selected=document.querySelector('#selected'),setup=document.querySelector('#setup');
 const pairingDialog=document.querySelector('#pairingDialog'),connectionState=document.querySelector('#connectionState');
 const compatibilityNotice=document.querySelector('#compatibilityNotice'),scanState=document.querySelector('#scanState');
@@ -183,13 +184,16 @@ let presetValues=[null,null,null,null,null],presetZoomValues=[null,null,null,nul
 async function refreshPresets(){try{const requestedTarget=targetId;const [r,z]=await Promise.all([fetch('/presets',{cache:'no-store'}),fetch('/zoom/presets',{cache:'no-store'})]);const values=r.ok?await r.json():null,zoomValues=z.ok?await z.json():null;if(requestedTarget!==targetId)return;if(values){presetValues=values;presetZoomValues=Array.isArray(zoomValues)?zoomValues:[null,null,null,null,null];renderPresets()}}catch(e){}}
 function renderPresets(){presetBox.replaceChildren();for(let i=0;i<5;i++){const row=document.createElement('p'),go=document.createElement('button'),save=document.createElement('button'),del=document.createElement('button');row.className='preset-row';go.textContent=(presetSymbols[i]?presetSymbols[i]+' ':'')+'Preset '+(i+1)+(Number.isInteger(presetZoomValues[i])?' · 🔍 '+zoomPercent(presetZoomValues[i])+' %':'');go.disabled=!presetValues[i];go.onclick=()=>presetAction(i,'goto');save.textContent='💾';save.className='icon';save.title='Enregistrer preset '+(i+1);save.setAttribute('aria-label',save.title);save.onclick=()=>presetAction(i,'save');del.textContent='🗑';del.className='icon';del.title='Supprimer preset '+(i+1);del.setAttribute('aria-label',del.title);del.disabled=!presetValues[i];del.onclick=()=>presetAction(i,'delete');row.append(go,save,del);presetBox.append(row)}}
 async function presetAction(i,action,fromGamepad=false){if(!linkReady||session===null||Date.now()-lastStatus>1800){presetMessage.textContent='Ronin indisponible ou commandes désactivées';return}if(action==='delete'&&!confirm('Supprimer le preset '+(i+1)+' ?'))return;if(action==='goto')cancelDpadZoom(!fromGamepad);const requestedSession=session;const stopped=await neutral();if(!stopped||session!==requestedSession||!linkReady||active||x!==0||y!==0){presetMessage.textContent='Arrêt ou liaison indisponible';return}try{const duration=document.querySelector('#presetDuration').value.padStart(2,'0');const r=await fetch('/preset/'+action,{method:'POST',headers:{'Content-Type':'text/plain','X-Ronin-Session':String(session)},body:action==='goto'?[i,duration,document.querySelector('#presetZoomSpeed').value.padStart(3,'0')].join(','):String(i)});presetMessage.textContent=r.ok?(action==='save'?'Position enregistrée':action==='delete'?'Preset supprimé':'Commande envoyée'):'Position ou liaison indisponible';if(action==='goto'&&r.ok&&zoomReady&&Number.isInteger(presetZoomValues[i])){zoomOwned=true;zoomAcceptedAt=Date.now()}if(action!=='goto'&&r.ok)await refreshPresets()}catch(e){presetMessage.textContent='ESP inaccessible'}}
-document.querySelector('#presetDuration').oninput=e=>document.querySelector('#presetDurationValue').textContent=(Number(e.target.value)/10).toFixed(1).replace('.',',');document.querySelector('#joySpeed').oninput=e=>document.querySelector('#joySpeedValue').textContent=e.target.value;
-document.querySelector('#presetZoomSpeed').oninput=e=>document.querySelector('#presetZoomSpeedValue').textContent=e.target.value;
-document.querySelector('#zoomSpeed').oninput=e=>document.querySelector('#zoomSpeedValue').textContent=e.target.value;
-document.querySelector('#gamepadSpeed').oninput=e=>document.querySelector('#gamepadSpeedValue').textContent=e.target.value;
+document.querySelector('#presetDuration').oninput=e=>{document.querySelector('#presetDurationValue').textContent=(Number(e.target.value)/10).toFixed(1).replace('.',',');publishNativeSettings()};document.querySelector('#joySpeed').oninput=e=>document.querySelector('#joySpeedValue').textContent=e.target.value;
+document.querySelector('#presetZoomSpeed').oninput=e=>{document.querySelector('#presetZoomSpeedValue').textContent=e.target.value;publishNativeSettings()};
+document.querySelector('#zoomSpeed').oninput=e=>{document.querySelector('#zoomSpeedValue').textContent=e.target.value;publishNativeSettings()};
+document.querySelector('#gamepadSpeed').oninput=e=>{document.querySelector('#gamepadSpeedValue').textContent=e.target.value;publishNativeSettings()};
+publishNativeSettings();
 renderPresets();refreshPresets();
 const pad=document.querySelector('#pad'),knob=document.querySelector('#knob'),label=document.querySelector('#status');
 const gamepadStatus=document.querySelector('#gamepadStatus'),control=createGamepadControl(),shortcuts=createGamepadShortcuts();
+const nativeGamepadApp=window.__RONIN_NATIVE_APP__===true;let nativeGamepadConnected=false;
+window.addEventListener('ronin-native-gamepad',event=>{nativeGamepadConnected=event.detail?.connected===true;gamepadStatus.className=nativeGamepadConnected?'connected':'';gamepadStatus.title=nativeGamepadConnected?'Manette détectée':'Manette non détectée';gamepadStatus.setAttribute('aria-label',gamepadStatus.title)});
 let active=false,x=0,y=0,inflight=false,session=null,linkReady=false,lastStatus=0,focused=true,statusBusy=false,gamepadMoving=false,motionFlight=null;
 const zoomSlider=document.querySelector('#zoomPosition'),zoomMessage=document.querySelector('#zoomMessage'),zoomInvert=document.querySelector('#zoomInvert');
 let lastZoomStatus=null;
@@ -242,7 +246,7 @@ zoomInvert.onclick=()=>{
   zoomInverted=!zoomInverted;
   try{localStorage.setItem('ronin.zoomInverted',zoomInverted?'1':'0')}catch(e){}
   zoomSlider.value=String(zoomCoordinate(motorPosition));
-  renderZoomDirection();renderPresets();
+  renderZoomDirection();renderPresets();publishNativeSettings();
   if(lastZoomStatus)updateZoom(lastZoomStatus);
 };
 renderZoomDirection();
@@ -283,14 +287,15 @@ function position(e){let r=pad.getBoundingClientRect(),dx=e.clientX-(r.left+r.wi
 pad.onpointerdown=e=>{if(!linkReady||Date.now()-lastStatus>1800)return;cancelDpadZoom();control.reset();active=true;pad.setPointerCapture(e.pointerId);position(e);send()};
 pad.onpointermove=e=>{if(active)position(e)};pad.onpointerup=neutral;pad.onpointercancel=neutral;pad.onlostpointercapture=neutral;
 document.querySelector('#stop').onclick=stopAll;
-window.addEventListener('blur',()=>{focused=false;stopAll()});window.addEventListener('focus',()=>{focused=true});
-document.addEventListener('visibilitychange',()=>{if(document.hidden)stopAll()});
+function stopForegroundControls(){if(active||gamepadMoving||x!==0||y!==0)neutral();else resetLocal();shortcuts.reset();lastDpadDirection=0;if(zoomDragging||zoomOwned||dpadZoomActive)stopZoom()}
+window.addEventListener('blur',()=>{focused=false;if(nativeGamepadApp)stopForegroundControls();else stopAll()});window.addEventListener('focus',()=>{focused=true});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(nativeGamepadApp)stopForegroundControls();else stopAll()}});
 window.addEventListener('gamepaddisconnected',()=>{cancelDpadZoom();if(gamepadMoving)neutral();else control.reset()});
 setInterval(()=>{
   let pads=[];try{if(typeof navigator.getGamepads==='function')pads=Array.from(navigator.getGamepads()).filter(Boolean)}catch(e){}
-  let candidate=pads.find(p=>p.connected&&p.mapping==='standard')||null;
-  gamepadStatus.className=candidate?'connected':'';
-  gamepadStatus.title=candidate?'Manette détectée':'Manette non détectée';
+  let candidate=nativeGamepadApp?null:(pads.find(p=>p.connected&&p.mapping==='standard')||null);
+  gamepadStatus.className=nativeGamepadApp?(nativeGamepadConnected?'connected':''):candidate?'connected':'';
+  gamepadStatus.title=nativeGamepadApp?(nativeGamepadConnected?'Manette détectée':'Manette non détectée'):candidate?'Manette détectée':'Manette non détectée';
   gamepadStatus.setAttribute('aria-label',gamepadStatus.title);
   if(active){shortcuts.reset();control.reset();send();return}
   let goodLink=linkReady&&Date.now()-lastStatus<1800;

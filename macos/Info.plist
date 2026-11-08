@@ -26,6 +26,8 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>ESP Ronin Control recherche le pont ESP32-C6 sur ton réseau local et ouvre son interface de pilotage.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>ESP Ronin Control reçoit les commandes de ta manette Bluetooth, même quand l’app n’est pas au premier plan.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_http._tcp</string>
