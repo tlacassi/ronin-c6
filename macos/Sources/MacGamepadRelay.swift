@@ -79,6 +79,8 @@ final class MacGamepadRelay: ObservableObject {
         currentSession = nil
         lastMoveWasActive = false
         zoomActive = false
+        armed = false
+        motionSuppressedUntilRelease = true
         updateProcessActivity(active: false)
         savedPresets = Array(repeating: false, count: 5)
         linkMessage = "Recherche de l’ESP à \(normalized.host ?? "l’adresse choisie")"
@@ -235,6 +237,8 @@ final class MacGamepadRelay: ObservableObject {
                 lastMoveWasActive = false
                 zoomActive = false
                 zoomDirection = 0
+                armed = false
+                motionSuppressedUntilRelease = true
                 updateProcessActivity(active: false)
             }
             currentSession = ready ? newSession : nil
@@ -250,6 +254,8 @@ final class MacGamepadRelay: ObservableObject {
             if zoomActive, let oldSession = currentSession { enqueue(.zoomStop(oldSession)) }
             lastMoveWasActive = false
             zoomActive = false
+            armed = false
+            motionSuppressedUntilRelease = true
             updateProcessActivity(active: false)
             linkReady = false
             zoomReady = false

@@ -30,7 +30,7 @@ L’application ne crée pas de réseau Wi‑Fi et ne remplace pas l’applicati
 
 ## Manette en arrière-plan
 
-Quand l’onglet **Contrôler le Ronin** est ouvert dans l’app, macOS GameController reçoit les entrées DualSense ou Xbox même si une autre app passe au premier plan. Le relais natif envoie directement au pont ESP les axes, presets (appui court pour rappeler, appui long pour enregistrer) et zoom par la croix directionnelle. Il reprend les vitesses, la durée des presets et l’inversion du zoom choisies dans la page intégrée. La gâchette gauche doit être relâchée, stick centré, puis maintenue pour piloter.
+Quand l’onglet **Contrôler le Ronin** est ouvert dans l’app, macOS GameController reçoit les entrées DualSense ou Xbox même si une autre app passe au premier plan. Le relais natif envoie directement au pont ESP les axes, presets (appui court pour rappeler, appui long pour enregistrer) et zoom par la croix directionnelle. Il reprend les vitesses, la durée des presets et l’inversion du zoom choisies dans la page intégrée. La gâchette gauche doit être relâchée, stick centré, puis maintenue pour piloter. Après une coupure ou une reconnexion BLE, il faut refaire ce geste neutre avant tout mouvement.
 
 Le relais s’arrête si l’onglet de contrôle est fermé, si la manette est déconnectée ou si le Ronin perd sa liaison. macOS peut demander l’autorisation Bluetooth au premier usage. L’app doit rester ouverte pour le pilotage en arrière-plan.
 
