@@ -9,6 +9,7 @@ private enum RelayAction {
 }
 
 private enum RelayCommand {
+    case home(UInt32)
     case move(Int, Int, UInt32)
     case zoom(Int, Int, UInt32)
     case zoomKeepAlive(UInt32)
@@ -43,6 +44,7 @@ final class MacGamepadRelay: ObservableObject {
     private var lastZoomKeepAlive = Date.distantPast
     private var lastMoveWasActive = false
     private var controllerIdentity: ObjectIdentifier?
+    private var triggerTap = TriggerDoubleTap()
     private var armed = false
     private var motionSuppressedUntilRelease = false
     private var previousFaces = Array(repeating: false, count: 4)
@@ -189,7 +191,12 @@ final class MacGamepadRelay: ObservableObject {
     }
 
     private func setController(_ newController: GCController?) {
+        controller?.extendedGamepad?.leftTrigger.pressedChangedHandler = nil
+        triggerTap = TriggerDoubleTap()
         controller = newController
+        newController?.extendedGamepad?.leftTrigger.pressedChangedHandler = { [weak self] _, _, pressed in
+            Task { @MainActor in self?.handleTrigger(pressed) }
+        }
         controllerIdentity = newController.map(ObjectIdentifier.init)
         isConnected = newController != nil
         controllerName = newController?.vendorName ?? (newController == nil ? "Manette non détectée" : "Manette détectée")
@@ -214,6 +221,22 @@ final class MacGamepadRelay: ObservableObject {
         } else {
             linkMessage = "Manette détectée — gâchette gauche + stick pour piloter"
         }
+    }
+
+    private func handleTrigger(_ pressed: Bool) {
+        guard let pad = controller?.extendedGamepad else { return }
+        let neutral = abs(pad.leftThumbstick.xAxis.value) <= 0.12 && abs(pad.leftThumbstick.yAxis.value) <= 0.12
+        guard triggerTap.update(pressed: pressed, neutral: neutral, ready: canControl,
+                                now: ProcessInfo.processInfo.systemUptime), let session = currentSession else { return }
+        commands.removeAll()
+        enqueue(.move(0, 0, session))
+        if zoomActive { enqueue(.zoomStop(session)) }
+        enqueue(.home(session))
+        lastMoveWasActive = false
+        zoomActive = false
+        armed = false
+        motionSuppressedUntilRelease = true
+        linkMessage = "Recentrage demandé"
     }
 
     private func refreshStatus() async {
@@ -284,6 +307,7 @@ final class MacGamepadRelay: ObservableObject {
         let y = Double(pad.leftThumbstick.yAxis.value)
         let trigger = pad.leftTrigger.value > 0.5
         let neutralStick = abs(x) <= 0.12 && abs(y) <= 0.12
+        if !neutralStick || !canControl { triggerTap = TriggerDoubleTap() }
         if !trigger && neutralStick {
             armed = true
             motionSuppressedUntilRelease = false
@@ -330,7 +354,7 @@ final class MacGamepadRelay: ObservableObject {
         let pitch: Int
         if armed && trigger && !motionSuppressedUntilRelease {
             yaw = Int((deadZone(x) * 300.0 * Double(gamepadSpeed) / 100.0).rounded())
-            pitch = Int((deadZone(-y) * 300.0 * Double(gamepadSpeed) / 100.0).rounded())
+            pitch = Int((deadZone(y) * 300.0 * Double(gamepadSpeed) / 100.0).rounded())
         } else {
             yaw = 0
             pitch = 0
@@ -460,6 +484,8 @@ final class MacGamepadRelay: ObservableObject {
 
     private func send(_ command: RelayCommand) async throws {
         switch command {
+        case let .home(session):
+            _ = try await request(path: "home", method: "POST", body: "", session: session)
         case let .move(yaw, pitch, session):
             _ = try await request(path: "move", method: "POST", body: "\(yaw),\(pitch)", session: session)
         case let .zoom(position, speed, session):

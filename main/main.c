@@ -390,13 +390,30 @@ static esp_err_t preset_action(httpd_req_t *req)
     }
     return httpd_resp_sendstr(req,"OK");
 }
+static esp_err_t home_action(httpd_req_t *req)
+{
+    uint32_t l_u32Session = 0u;
+    const int16_t l_ai16Pose[3] = {0, 0, 0};
+    if((req->content_len != 0) || !read_session(req, &l_u32Session))
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid home request");
+        return ESP_FAIL;
+    }
+    if(!ronin_ble_move(0, 0, l_u32Session) || !ronin_ble_goto(l_u32Session, l_ai16Pose, 20u))
+    {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "Fresh pose or link unavailable");
+        return ESP_FAIL;
+    }
+    return httpd_resp_sendstr(req, "OK");
+}
 static void start_server(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     /* Browser polling can retain every socket across multiple open clients. */
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 1;
-    cfg.max_uri_handlers = 17;
+    cfg.max_uri_handlers = 18;
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &cfg));
     const httpd_uri_t zoom_presets_uri = {.uri="/zoom/presets", .method=HTTP_GET, .handler=zoom_presets_get};
@@ -407,6 +424,8 @@ static void start_server(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &zoom_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &zoom_stop_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &zoom_keep_uri));
+    const httpd_uri_t home_uri = {.uri="/home", .method=HTTP_POST, .handler=home_action};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &home_uri));
     const httpd_uri_t page_uri = {.uri="/", .method=HTTP_GET, .handler=page};
     const httpd_uri_t script_uri = {.uri="/gamepad.js", .method=HTTP_GET, .handler=gamepad_script};
     const httpd_uri_t status_uri = {.uri="/status", .method=HTTP_GET, .handler=status};

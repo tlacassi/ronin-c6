@@ -40,3 +40,7 @@ Le relais s’arrête si l’onglet de contrôle est fermé, si la manette est d
 - Le SSID et le mot de passe sont compilés dans le firmware parce que le firmware actuel ne propose pas de configuration Wi‑Fi à chaud par USB.
 - L’app ne déverrouille pas le Ronin et ne réalise pas l’appairage DJI.
 - Le contrôle matériel dépend toujours de la liaison Wi‑Fi/BLE et des limites décrites dans le README racine.
+
+Deux appuis courts sur L2, avec le stick centré, demandent un retour des trois axes à 0° dans le repère absolu du Ronin en deux secondes. Une gâchette maintenue ou un stick déplacé annule la détection de double appui. Le zoom ne change pas pendant ce recentrage.
+
+Après un rebuild, relancer précisément le bundle produit par `build_app.sh`. Si une autre copie de l’app est utilisée depuis Finder, la remplacer aussi : reconstruire les sources ne met pas automatiquement à jour les autres bundles déjà présents sur le Mac.
