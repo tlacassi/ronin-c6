@@ -1,46 +1,33 @@
-# ESP Ronin Control pour macOS
+# ESP Ronin Control 2 — application autonome
 
-Application SwiftUI native qui prépare et flashe un ESP32-C6, puis ouvre l’interface web du Ronin dans une fenêtre intégrée. Elle ne nécessite ni serveur web séparé ni dépendance Swift externe.
+L’utilisateur n’a besoin que de `ESP Ronin Control.app` (macOS 13 ou supérieur, Intel ou Apple Silicon). Le bundle contient l’interface native, les trois images du firmware ESP32-C6, leurs empreintes SHA-256, les outils de flash Espressif 5.6.0 et leurs runtimes pour les deux architectures. Aucun projet, Python, ESP-IDF, Homebrew ou téléchargement complémentaire n’est nécessaire pour utiliser l’app.
 
-## Construire l’application
+## Installer ou mettre à jour un ESP
 
-Depuis la racine du dépôt, lance :
+1. Brancher l’ESP32-C6 via son port USB natif USB-Serial/JTAG.
+2. Ouvrir **Configurer l’ESP**, choisir le port, puis **Installer le firmware intégré**.
+3. Le flash vérifie les empreintes avant écriture et vérifie les données écrites. Il écrit le bootloader à `0x0`, la table des partitions à `0x8000` et l’application à `0x10000`. La zone NVS à `0x9000` reste intacte : presets, cible BLE et Wi‑Fi existant sont conservés. Ne pas débrancher pendant l’écriture.
+4. Les anciens firmwares doivent être mis à jour une première fois pour disposer du protocole de configuration USB.
+
+## Régler le réseau sans reflasher
+
+L’USB reste utilisable même si le réseau enregistré est absent ou incorrect. Saisir le SSID 2,4 GHz et le mot de passe, puis **Enregistrer le Wi‑Fi sur l’ESP**. Le réseau est enregistré dans la NVS par le SDK Wi-Fi et l’ESP essaie immédiatement de le rejoindre. L’app affiche l’adresse IP obtenue ou l’échec de connexion ; un mauvais mot de passe peut être corrigé en USB. **Lire la configuration** affiche le SSID, l’état et l’adresse IP, jamais le mot de passe.
+
+Le mot de passe n’est enregistré ni dans l’app, ni dans ses préférences, ses arguments de processus ou ses logs. Il transite par le câble USB puis reste sur l’ESP. Un réseau ouvert utilise un mot de passe vide ; sinon, 8 à 63 octets sont acceptés. Un port USB déjà utilisé par un moniteur doit être libéré avant cette opération.
+
+## Contrôler le Ronin
+
+Le Mac et l’ESP doivent être sur le même réseau. L’onglet de contrôle charge `http://ronin-c6.local`, ou une adresse IP saisie manuellement. Le relais GameController conserve le pilotage en arrière-plan quand cet onglet reste ouvert : gâchette gauche + stick, boutons de face pour presets (court : rappel ; long : sauvegarde), haut/bas pour zoom, double appui court L2 avec stick centré pour recentrer. Après une reprise BLE, relâcher la gâchette et recentrer le stick avant de piloter.
+
+## Reconstruire une version distribuable — mainteneurs uniquement
+
+ESP-IDF 5.2 et les outils de compilation macOS sont nécessaires seulement pour fabriquer une nouvelle version :
 
 ```sh
+idf.py -B build-standalone -D SDKCONFIG="$PWD/sdkconfig.standalone" -D SDKCONFIG_DEFAULTS="$PWD/sdkconfig.standalone.defaults" build
 ./macos/build_app.sh
 ```
 
-Le script produit `macos/build/ESP Ronin Control.app`, une application universelle Apple Silicon et Intel, compatible macOS 13 ou supérieur. Elle peut être lancée depuis Finder ou avec `open "macos/build/ESP Ronin Control.app"`.
+Le build standalone est distinct du build local ; il utilise des identifiants Wi-Fi vides. Le packaging refuse toute configuration non générique. `prepare_resources.py` récupère les archives officielles esptool et vérifie leurs SHA-256 fixés dans le code avant copie. Les téléchargements vont dans `macos/vendor`, ignoré par Git. Les licences sont intégrées au bundle ; voir `THIRD_PARTY.md`.
 
-## Flasher et configurer le Wi‑Fi
-
-1. Installe ESP-IDF 5.2 ou une version compatible sur le Mac.
-2. Ouvre l’application, sélectionne la racine du dépôt et le dossier ESP-IDF (celui qui contient `export.sh`).
-3. Branche l’ESP32-C6 en USB, choisis son port `/dev/cu.usb*`, entre le SSID et le mot de passe puis clique **Construire et flasher**.
-
-L’app met à jour uniquement `CONFIG_RONIN_WIFI_SSID` et `CONFIG_RONIN_WIFI_PASSWORD` dans le `sdkconfig` local, puis lance `idf.py build flash`. Ces réglages sont conservés localement dans le fichier ignoré par Git. Le mot de passe ne va ni dans les préférences de l’application, ni dans les arguments ou les logs du processus. Il reste toutefois dans le firmware flashé, comme dans le fonctionnement actuel du projet. Chaque changement de réseau demande une nouvelle compilation et un nouveau flash.
-
-Le moniteur série s’ouvre par défaut après le flash. Il affiche les logs de démarrage et l’adresse du pont ; le bouton **Arrêter** ferme le moniteur et libère le port. Le flash écrit le firmware ESP-IDF, sans effacer intentionnellement les presets de la partition NVS.
-
-## Ouvrir le contrôle
-
-L’onglet **Contrôler le Ronin** vérifie toutes les quatre secondes `http://ronin-c6.local/status`, puis charge l’interface du pont dans WebKit. Tu peux saisir une adresse IP manuellement si mDNS n’est pas disponible. macOS demande l’autorisation d’accès au réseau local au premier essai.
-
-L’application ne crée pas de réseau Wi‑Fi et ne remplace pas l’application DJI pour l’appairage initial. Le Mac et l’ESP doivent rejoindre le même réseau pour accéder à l’interface de commande. Le firmware ESP-IDF et les outils Espressif restent nécessaires pour reconstruire et flasher.
-
-## Manette en arrière-plan
-
-Quand l’onglet **Contrôler le Ronin** est ouvert dans l’app, macOS GameController reçoit les entrées DualSense ou Xbox même si une autre app passe au premier plan. Le relais natif envoie directement au pont ESP les axes, presets (appui court pour rappeler, appui long pour enregistrer) et zoom par la croix directionnelle. Il reprend les vitesses, la durée des presets et l’inversion du zoom choisies dans la page intégrée. La gâchette gauche doit être relâchée, stick centré, puis maintenue pour piloter. Après une coupure ou une reconnexion BLE, il faut refaire ce geste neutre avant tout mouvement.
-
-Le relais s’arrête si l’onglet de contrôle est fermé, si la manette est déconnectée ou si le Ronin perd sa liaison. macOS peut demander l’autorisation Bluetooth au premier usage. L’app doit rester ouverte pour le pilotage en arrière-plan.
-
-## Limites de cette V1
-
-- Le flash USB est réalisé avec `idf.py`, pas avec un firmware `.bin` téléchargé depuis Internet.
-- Le SSID et le mot de passe sont compilés dans le firmware parce que le firmware actuel ne propose pas de configuration Wi‑Fi à chaud par USB.
-- L’app ne déverrouille pas le Ronin et ne réalise pas l’appairage DJI.
-- Le contrôle matériel dépend toujours de la liaison Wi‑Fi/BLE et des limites décrites dans le README racine.
-
-Deux appuis courts sur L2, avec le stick centré, demandent un retour des trois axes à 0° dans le repère absolu du Ronin en deux secondes. Une gâchette maintenue ou un stick déplacé annule la détection de double appui. Le zoom ne change pas pendant ce recentrage.
-
-Après un rebuild, relancer précisément le bundle produit par `build_app.sh`. Si une autre copie de l’app est utilisée depuis Finder, la remplacer aussi : reconstruire les sources ne met pas automatiquement à jour les autres bundles déjà présents sur le Mac.
+Le script produit `macos/build/ESP Ronin Control.app`. Le bundle est signé ad hoc, sans notarisation Apple. Copier **tout** le `.app` pour le déplacer, y compris `Contents/Resources` ; les autres copies déjà présentes sur le Mac ne sont pas remplacées automatiquement.

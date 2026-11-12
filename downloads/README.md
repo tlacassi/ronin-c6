@@ -1,5 +1,9 @@
 # ESP Ronin Control — macOS
 
+La version autonome actuelle est distribuée dans les [Releases GitHub](https://github.com/tlacassi/ronin-c6/releases/latest).
+
+## Archive historique 1.1
+
 [Download the ready-to-run universal macOS app](ESP-Ronin-Control-macOS-universal-e4c6c21.zip?raw=true).
 
 Unzip the archive and open `ESP Ronin Control.app`. Requires macOS 13 or later; supports Apple Silicon and Intel. This bundle was built from source revision `e4c6c21` and includes the native background gamepad relay and double-L2 recentering.

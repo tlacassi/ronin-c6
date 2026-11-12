@@ -11,6 +11,7 @@ MODULE_CACHE="$MACOS_DIR/build/ModuleCache"
 rm -rf "$APP_DIR"
 mkdir -p "$CONTENTS/MacOS" "$MODULE_CACHE"
 cp "$MACOS_DIR/Info.plist" "$CONTENTS/Info.plist"
+python3 "$MACOS_DIR/prepare_resources.py" "$CONTENTS/Resources"
 
 for ARCH in arm64 x86_64; do
 	 swiftc \
@@ -35,6 +36,6 @@ lipo -create \
 	-output "$CONTENTS/MacOS/RoninControl"
 rm "$CONTENTS/MacOS/RoninControl.arm64" "$CONTENTS/MacOS/RoninControl.x86_64"
 chmod 755 "$CONTENTS/MacOS/RoninControl"
-codesign --force --deep --sign - --timestamp=none "$APP_DIR"
+codesign --force --sign - --timestamp=none "$APP_DIR"
 
 printf 'Built %s\n' "$APP_DIR"

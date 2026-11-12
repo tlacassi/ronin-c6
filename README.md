@@ -14,10 +14,9 @@ Les angles sont affichés quand une télémétrie récente est reçue. Après ab
 
 ## Configuration et lancement
 
-1. Installer ESP-IDF 5.2 et son extension VS Code. Ouvrir ce dossier et sélectionner la cible ESP32-C6. La carte doit disposer d'une alimentation adaptée et d'une flash suffisante (vérifier selon la carte).
-2. Dans un terminal ESP-IDF : `idf.py menuconfig`. Sous **Ronin bridge**, saisir localement le SSID et le mot de passe Wi-Fi. Le nom BLE dans menuconfig reste facultatif : la cible se choisit depuis la page web. Ne pas partager `sdkconfig` ni les binaires compilés : ils contiennent les identifiants Wi-Fi. `sdkconfig` est ignoré par Git.
-3. `idf.py build`, puis `idf.py -p /dev/cu.usbmodem... flash monitor` avec le port réel. Débrancher les autres clients BLE de l'application DJI. Le journal affiche `Open http://<adresse>/`. Ouvrir cette adresse depuis le même réseau ; à défaut, consulter la liste DHCP du routeur. Dans **Choisir ou changer de Ronin**, la page lance un scan et liste jusqu'à douze RS 3, RS 4 (dont RS 4 Pro) et RS 5 visibles récemment, avec nom, adresse BLE, RSSI et cible active. Pour préserver la fiabilité des commandes, le scan de sélection interrompt temporairement la connexion au Ronin actuel. Choisir une cible la mémorise par adresse puis s'y reconnecte ; fermer la fenêtre de sélection reprend la cible mémorisée si aucune nouvelle cible n'a été choisie. **Déconnecter / oublier la cible** efface l'adresse sauvegardée et laisse le scan actif. La page relance la recherche après une perte BLE. Le nom local `http://ronin-c6.local/` est annoncé en mDNS : ouvrir la page avec ce nom permet au navigateur de réessayer après une coupure, y compris si l’adresse IP change, lorsque le réseau et le système prennent mDNS en charge. Sinon, retrouver l’adresse dans le routeur ou le moniteur série. Un seul ESP avec ce nom doit être présent sur le réseau.
-La connexion BLE directe depuis le pont ne réalise pas l'activation ou le jumelage de première utilisation dans l'application DJI. Si le stabilisateur demande une authentification, le firmware ne la prend pas encore en charge ; ne pas modifier ou réinitialiser ses paramètres pour contourner cela. L'activation initiale reste à effectuer avec l'application DJI.
+1. Télécharger l’app macOS depuis les [Releases](https://github.com/tlacassi/ronin-c6/releases/latest), puis la décompresser. Aucun SDK ni dossier de projet n’est nécessaire côté utilisateur. ESP-IDF 5.2 reste l’environnement de développement du firmware.
+2. Pour l’utilisation normale, ouvrir l’app macOS autonome : elle contient le firmware et l’outil de flash. Brancher l’ESP32-C6 sur son USB natif, installer le firmware intégré, puis enregistrer le Wi-Fi dans **Configurer l’ESP**. Le réseau est conservé sur l’ESP et peut être changé en USB sans reflash. Les anciennes options SSID/mot de passe de menuconfig ne sont plus utilisées par le démarrage réseau.
+3. Ouvrir l’onglet de contrôle sur le même réseau. Utiliser `http://ronin-c6.local/`, ou l’IP affichée par la lecture USB. Le choix de la cible BLE reste disponible dans **Choisir ou changer de Ronin**.
 
 4. Premier essai : stabilisateur dégagé et retenu, vitesse réduite, prêt à couper son alimentation ; tester séparément les axes, sens, relâchement, perte de page, Wi-Fi et BLE. Ne pas monter de charge sensible avant validation.
 
@@ -37,7 +36,7 @@ Puis ouvrir **http://127.0.0.1:8765/** et laisser le terminal ouvert. Si le nom 
 
 ## Application macOS
 
-Le compagnon **ESP Ronin Control** fournit une fenêtre native pour sélectionner l’ESP32-C6 en USB, entrer le SSID et le mot de passe Wi‑Fi, reconstruire et flasher avec ESP-IDF, puis afficher le moniteur série. Un second onglet recherche `ronin-c6.local` et ouvre l’interface web du pont dans l’application. Voir [macos/README.md](macos/README.md) pour construire et utiliser l’app. Le Wi‑Fi est compilé dans le firmware actuel : changer de réseau implique un nouveau flash.
+**ESP Ronin Control 2** est autonome : firmware générique, outils de flash Intel/Apple Silicon et runtimes sont embarqués dans le `.app`. La configuration du Wi‑Fi se fait par USB et reste sur l’ESP, sans projet ni ESP-IDF à installer sur le Mac utilisateur. Voir [macos/README.md](macos/README.md) pour l’utilisation et la reconstruction par un mainteneur.
 
 ## Zoom avec le Focus Pro Motor
 

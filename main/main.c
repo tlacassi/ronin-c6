@@ -15,28 +15,13 @@
 #include "preset_data.h"
 #include "cJSON.h"
 #include "mdns.h"
+#include "network_config.h"
 
 static const char *TAG = "ronin";
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 extern const uint8_t gamepad_js_start[] asm("_binary_gamepad_js_start");
 extern const uint8_t gamepad_js_end[] asm("_binary_gamepad_js_end");
-static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    (void)arg;
-    if((base == WIFI_EVENT) && (id == WIFI_EVENT_STA_START)) { esp_wifi_connect(); }
-    else if((base == WIFI_EVENT) && (id == WIFI_EVENT_STA_DISCONNECTED))
-    {
-        ronin_ble_invalidate();
-        ESP_LOGW(TAG, "Wi-Fi disconnected, reconnecting");
-        esp_wifi_connect();
-    }
-    else if((base == IP_EVENT) && (id == IP_EVENT_STA_GOT_IP))
-    {
-        ip_event_got_ip_t *event = data;
-        ESP_LOGI(TAG, "Open http://" IPSTR "/", IP2STR(&event->ip_info.ip));
-    }
-}
 static esp_err_t page(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -461,19 +446,7 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&init));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL));
-    wifi_config_t wifi = {0};
-    if(strlen(CONFIG_RONIN_WIFI_SSID) == 0u)
-    { ESP_LOGE(TAG, "Set Wi-Fi SSID in menuconfig"); return; }
-    strlcpy((char *)wifi.sta.ssid, CONFIG_RONIN_WIFI_SSID, sizeof(wifi.sta.ssid));
-    strlcpy((char *)wifi.sta.password, CONFIG_RONIN_WIFI_PASSWORD, sizeof(wifi.sta.password));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(network_config_start());
     start_server();
     esp_err_t mdns_result = mdns_init();
     if(mdns_result == ESP_OK) { mdns_result = mdns_hostname_set("ronin-c6"); }
