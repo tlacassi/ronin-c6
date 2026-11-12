@@ -68,6 +68,11 @@ class ProxyTest(unittest.TestCase):
                                  (200, b'42:' + body.encode()))
                 self.assertEqual(self.request('POST', path, body, {'Origin': 'http://example.com'})[0], 403)
 
+    def test_sleep_route(self):
+        origin = f'http://127.0.0.1:{self.proxy.server_port}'
+        self.assertEqual(self.request('POST', '/sleep', '0', {'Origin': origin, 'X-Ronin-Session': '42'}), (200, b'42:0'))
+        self.assertEqual(self.request('POST', '/sleep', '1', {'Origin': 'http://example.com'})[0], 403)
+
     def test_rejects_external_origin_host_and_unknown_path(self):
         self.assertEqual(self.request('POST', '/move', '1,2', {'Origin': 'http://example.com'})[0], 403)
         self.assertEqual(self.request('GET', '/status', headers={'Host': 'example.com'})[0], 403)

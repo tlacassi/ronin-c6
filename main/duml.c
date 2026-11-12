@@ -31,6 +31,15 @@ static void put16(uint8_t *out, uint16_t value)
     out[0] = (uint8_t)value;
     out[1] = (uint8_t)(value >> 8u);
 }
+void duml_sleep(uint8_t out[16], uint16_t seq, bool sleep)
+{
+    out[0] = 0x55u; out[1] = 16u; out[2] = 0x04u;
+    out[3] = duml_crc8(out, 3u);
+    out[4] = 0x02u; out[5] = 0x04u; put16(&out[6], seq);
+    out[8] = 0x40u; out[9] = 0x04u; out[10] = 0x0fu;
+    out[11] = 0x23u; out[12] = 0x01u; out[13] = sleep ? 1u : 0u;
+    put16(&out[14], duml_crc16(out, 14u));
+}
 void duml_speed(uint8_t out[20], uint16_t seq, int16_t yaw, int16_t roll, int16_t pitch)
 {
     out[0] = 0x55u; out[1] = 20u; out[2] = 0x04u;

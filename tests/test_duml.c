@@ -7,6 +7,14 @@ int main(void)
     const uint8_t captured[] = {0x55,0x1a,0x04,0xb1,0x04,0x02,0x00,0x00,0x00,0x1c,0x01,0x03,0x01,0x00,0x01,0x00,0x02,0x00,0x01,0xff,0x03,0x00,0x01,0x00,0x5b,0x10};
     assert(duml_crc8(captured, 3) == captured[3]);
     assert(duml_crc16(captured, sizeof(captured)-2) == 0x105b);
+    uint8_t sleep_frame[16] = {0};
+    duml_sleep(sleep_frame, 0x1234u, true);
+    assert(sleep_frame[4] == 2u && sleep_frame[5] == 4u && sleep_frame[8] == 0x40u);
+    assert(sleep_frame[9] == 4u && sleep_frame[10] == 0x0fu && sleep_frame[11] == 0x23u && sleep_frame[12] == 1u && sleep_frame[13] == 1u);
+    assert(duml_crc16(sleep_frame, 14u) == (uint16_t)(sleep_frame[14] | (sleep_frame[15] << 8u)));
+    duml_sleep(sleep_frame, 0u, false);
+    assert(sleep_frame[13] == 0u && duml_crc8(sleep_frame, 3u) == sleep_frame[3]);
+    assert(duml_crc16(sleep_frame, 14u) == (uint16_t)(sleep_frame[14] | (sleep_frame[15] << 8u)));
     uint8_t frame[20] = {0};
     duml_speed(frame, 0x1234, -300, 0, 300);
     assert(frame[6] == 0x34 && frame[7] == 0x12);

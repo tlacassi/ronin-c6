@@ -90,6 +90,14 @@ static esp_err_t status(httpd_req_t *req)
                  zoom.available ? "true" : "false", zoom.moving ? "true" : "false",
                  (unsigned)zoom.target, zoom_error_name(zoom.error));
     }
+    bool sleeping = false;
+    bool sleep_known = ronin_ble_sleep_state(&sleeping);
+    used = strlen(json);
+    if(used > 0u)
+    {
+        snprintf(json + used - 1u, sizeof(json) - used + 1u, ",\"sleeping\":%s}",
+                 sleep_known ? (sleeping ? "true" : "false") : "null");
+    }
     return httpd_resp_sendstr(req, json);
 }
 static bool read_session(httpd_req_t *req, uint32_t *session)
@@ -392,13 +400,30 @@ static esp_err_t home_action(httpd_req_t *req)
     }
     return httpd_resp_sendstr(req, "OK");
 }
+static esp_err_t sleep_action(httpd_req_t *req)
+{
+    uint32_t session = 0u;
+    char action = 0;
+    if((req->content_len != 1) || !read_session(req, &session) ||
+       (httpd_req_recv(req, &action, 1u) != 1) || ((action != '0') && (action != '1')))
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid sleep request");
+        return ESP_FAIL;
+    }
+    if(!ronin_ble_set_sleep(session, action == '1'))
+    {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "State or link unavailable; stop motion first");
+    }
+    return httpd_resp_sendstr(req, "Sent");
+}
 static void start_server(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     /* Browser polling can retain every socket across multiple open clients. */
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 1;
-    cfg.max_uri_handlers = 18;
+    cfg.max_uri_handlers = 19;
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &cfg));
     const httpd_uri_t zoom_presets_uri = {.uri="/zoom/presets", .method=HTTP_GET, .handler=zoom_presets_get};
@@ -411,6 +436,8 @@ static void start_server(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &zoom_keep_uri));
     const httpd_uri_t home_uri = {.uri="/home", .method=HTTP_POST, .handler=home_action};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &home_uri));
+    const httpd_uri_t sleep_uri = {.uri="/sleep", .method=HTTP_POST, .handler=sleep_action};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &sleep_uri));
     const httpd_uri_t page_uri = {.uri="/", .method=HTTP_GET, .handler=page};
     const httpd_uri_t script_uri = {.uri="/gamepad.js", .method=HTTP_GET, .handler=gamepad_script};
     const httpd_uri_t status_uri = {.uri="/status", .method=HTTP_GET, .handler=status};

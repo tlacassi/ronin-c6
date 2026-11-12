@@ -7,6 +7,7 @@ bool telemetry_feed(telemetry_parser_t *parser, uint8_t byte, uint8_t *battery)
     parser->pose_updated = false;
     parser->focus_updated = false;
     parser->frame_valid = false;
+    parser->sleep_updated = false;
     if((parser->used == 0u) && (byte != 0x55u)) { return false; }
     parser->frame[parser->used++] = byte;
     if(parser->used == 4u)
@@ -26,6 +27,17 @@ bool telemetry_feed(telemetry_parser_t *parser, uint8_t byte, uint8_t *battery)
                  (parser->frame[9] == 0x0du) && (parser->frame[10] == 0x02u) &&
                  (length == 34u) && (parser->frame[31] <= 100u);
     if(valid) { *battery = parser->frame[31]; }
+    /* RS 3 sleep status, correlated with a physical sleep/wake cycle. */
+    if(parser->frame_valid && (length == 18u) && (parser->frame[4] == 0x04u) &&
+       (parser->frame[5] == 0x02u) && (parser->frame[8] == 0u) &&
+       (parser->frame[9] == 0x04u) && (parser->frame[10] == 0x27u) &&
+       (parser->frame[11] == 0u) && (parser->frame[12] == 0u) &&
+       (parser->frame[13] == 0u) && (parser->frame[14] == 0u) &&
+       (parser->frame[15] <= 1u))
+    {
+        parser->sleeping = parser->frame[15] == 1u;
+        parser->sleep_updated = true;
+    }
     if(parser->frame_valid &&
        ((parser->frame[8] & 0x80u) == 0u) && (parser->frame[9] == 0x04u) &&
        (parser->frame[10] == 0x66u) && (length >= 14u))

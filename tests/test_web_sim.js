@@ -21,6 +21,8 @@ let serverVerified = true;
 let serverControls = true;
 let serverPose = null;
 let serverBattery = null;
+let serverSleeping = null;
+const sleepRequests = [];
 let online = true;
 let gamepads = [];
 function element(name) {
@@ -50,7 +52,8 @@ function fetch(url, options) {
   if(url === '/zoom'||url.startsWith('/zoom/')) {zoomRequests.push({url,body:options.body,session:Number(options.headers['X-Ronin-Session'])});return Promise.resolve({ok:serverReady&&serverControls&&serverZoom.available});}
   if(url === '/presets') return Promise.resolve({ok:true, json:async()=>serverPresets});
   if(url.startsWith('/preset/')) {commandOrder.push('preset:'+options.body); presetRequests.push({url,body:options.body}); return Promise.resolve({ok:true}); }
-  if(url === '/status') return Promise.resolve({ok:true, json:async()=>({ble:serverReady,protocolVerified:serverVerified,controlEnabled:serverControls,session:serverSession,battery:serverBattery,pose:serverPose,zoom:serverZoom})});
+  if(url === '/status') return Promise.resolve({ok:true, json:async()=>({ble:serverReady,protocolVerified:serverVerified,controlEnabled:serverControls,session:serverSession,battery:serverBattery,pose:serverPose,zoom:serverZoom,sleeping:serverSleeping})});
+  if(url === '/sleep') {sleepRequests.push({body:options.body,session:Number(options.headers['X-Ronin-Session'])});return Promise.resolve({ok:true});}
   if(url === '/move') {
     let session = Number(options.headers['X-Ronin-Session']);
     let accepted = serverReady && serverControls && session === serverSession;
@@ -69,6 +72,16 @@ const pageScript = readFile('main/index.html').split('<script>')[1].split('</scr
 eval(pageScript);
 flush();
 check(element('#status').textContent.includes('BLE connecté'), 'initial link');
+check(element('#sleepButton').disabled && element('#wakeButton').disabled, 'unknown sleep state disables both controls');
+serverSleeping=false;tick(1000);
+check(!element('#sleepButton').disabled && element('#wakeButton').disabled, 'awake state allows sleep');
+element('#sleepButton').onclick();flush();
+check(sleepRequests.some(r=>r.body==='1'&&r.session===serverSession), 'sleep request carries current session');
+serverSleeping=true;tick(1000);
+check(element('#sleepButton').disabled && !element('#wakeButton').disabled, 'sleep state allows wake');
+element('#wakeButton').onclick();flush();
+check(sleepRequests.some(r=>r.body==='0'&&r.session===serverSession), 'wake request carries current session');
+serverSleeping=null;tick(1000);
 element('#openPairing').onclick(); flush();
 check(pairingRequests.some(r=>r.url==='/discover'), 'opening dialog starts discovery');
 element('#closePairing').onclick(); flush();

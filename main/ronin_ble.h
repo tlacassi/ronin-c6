@@ -61,6 +61,10 @@ bool ronin_ble_control_enabled(void);
 ronin_model_t ronin_ble_selected_model(void);
 /** @brief Return the latest supported battery value if still fresh. */
 bool ronin_ble_battery(uint8_t *value);
+/** @brief Return the fresh sleep state for the connected RS 3. */
+bool ronin_ble_sleep_state(bool *sleeping);
+/** @brief Request RS 3 sleep or wake for the current connection. */
+bool ronin_ble_set_sleep(uint32_t session, bool sleep);
 /** @brief Copy a fresh pose in tenths of a degree. */
 bool ronin_ble_pose(int16_t pose[3]);
 /** @brief Start the BLE central and background control task. */

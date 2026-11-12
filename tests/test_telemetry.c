@@ -15,6 +15,20 @@ int main(void)
     /* The frame below was captured on an RS 3; the battery interpretation is inferred from RS 3 Mini. */
     const uint8_t frame[] = {0x55,0x22,0x04,0xea,0xe5,0x02,0x98,0x1d,0x00,0x0d,0x02,0x00,0x00,0x20,0x00,0x00,0x23,0x06,0x00,0x00,0x40,0x0a,0x00,0x00,0xf1,0x09,0x00,0x00,0x8d,0x01,0x04,0x61,0xc2,0xf3};
     telemetry_parser_t parser = {0}; uint8_t battery = 0u;
+    const uint8_t asleep[] = {0x55,0x12,0x04,0xc7,0x04,0x02,0x56,0x0a,0x00,0x04,0x27,0x00,0x00,0x00,0x00,0x01,0xec,0xed};
+    const uint8_t awake[] = {0x55,0x12,0x04,0xc7,0x04,0x02,0x5c,0x0a,0x00,0x04,0x27,0x00,0x00,0x00,0x00,0x00,0x02,0xcd};
+    feed(&parser, asleep, sizeof(asleep), &battery);
+    assert(parser.frame_valid && parser.sleep_updated && parser.sleeping);
+    feed(&parser, awake, sizeof(awake), &battery);
+    assert(parser.frame_valid && parser.sleep_updated && !parser.sleeping);
+    uint8_t bad_sleep[sizeof(asleep)]; memcpy(bad_sleep, asleep, sizeof(bad_sleep)); bad_sleep[15] ^= 1u;
+    feed(&parser, bad_sleep, sizeof(bad_sleep), &battery);
+    assert(!parser.frame_valid && !parser.sleep_updated);
+    memcpy(bad_sleep, asleep, sizeof(bad_sleep)); bad_sleep[15] = 2u;
+    uint16_t sleep_crc = duml_crc16(bad_sleep, sizeof(bad_sleep) - 2u);
+    bad_sleep[16] = (uint8_t)sleep_crc; bad_sleep[17] = (uint8_t)(sleep_crc >> 8u);
+    feed(&parser, bad_sleep, sizeof(bad_sleep), &battery);
+    assert(parser.frame_valid && !parser.sleep_updated);
     assert(feed(&parser, frame, 12u, &battery) == 0u);
     assert(feed(&parser, frame + 12u, sizeof(frame) - 12u, &battery) == 1u);
     assert(battery == 97u);

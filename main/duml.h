@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+/** @brief Encode the captured RS 3 sleep or wake command. */
+void duml_sleep(uint8_t out[16], uint16_t seq, bool sleep);
 /** @brief Encode the RS 3 velocity command in a 20-byte DUML frame. */
 void duml_speed(uint8_t out[20], uint16_t seq, int16_t yaw, int16_t roll, int16_t pitch);
 /** @brief Calculate the DUML header checksum. */

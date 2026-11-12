@@ -38,6 +38,10 @@ fieldset{border:0;padding:0;margin:0}
 <p id="status">Recherche du Ronin…</p>
 <p id="pose">Position : indisponible</p>
 <p id="battery">Batterie : indisponible</p>
+<p id="sleepState">Veille : indisponible</p>
+<button type="button" class="secondary" id="sleepButton" disabled>Mettre en veille</button>
+<button type="button" class="secondary" id="wakeButton" disabled>Réveiller</button>
+<p id="sleepMessage"></p>
 <p>Erreurs Ronin : non disponibles</p>
 <section>
   <h2>Connexion BLE</h2>
@@ -195,6 +199,22 @@ const gamepadStatus=document.querySelector('#gamepadStatus'),control=createGamep
 const nativeGamepadApp=window.__RONIN_NATIVE_APP__===true;let nativeGamepadConnected=false;
 window.addEventListener('ronin-native-gamepad',event=>{nativeGamepadConnected=event.detail?.connected===true;gamepadStatus.className=nativeGamepadConnected?'connected':'';gamepadStatus.title=nativeGamepadConnected?'Manette détectée':'Manette non détectée';gamepadStatus.setAttribute('aria-label',gamepadStatus.title)});
 let active=false,x=0,y=0,inflight=false,session=null,linkReady=false,lastStatus=0,focused=true,statusBusy=false,gamepadMoving=false,motionFlight=null;
+let sleepBusy=false,sleepingState=null;
+async function setSleep(sleep){
+  if(sleepBusy||!linkReady||session===null||sleepingState===null||sleepingState===sleep)return;
+  sleepBusy=true;document.querySelector('#sleepButton').disabled=true;document.querySelector('#wakeButton').disabled=true;
+  const current=session;stopZoom();
+  try{
+    const stopped=await neutral();
+    if(!stopped||current!==session||!linkReady)throw new Error();
+    const r=await fetch('/sleep',{method:'POST',headers:{'Content-Type':'text/plain','X-Ronin-Session':String(current)},body:sleep?'1':'0'});
+    document.querySelector('#sleepMessage').textContent=r.ok?'Commande envoyée, attente du Ronin…':'Arrête les commandes et vérifie la connexion';
+    sleepingState=null;
+  }catch(e){document.querySelector('#sleepMessage').textContent='Commande indisponible'}
+  finally{sleepBusy=false;refreshStatus()}
+}
+document.querySelector('#sleepButton').onclick=()=>setSleep(true);
+document.querySelector('#wakeButton').onclick=()=>setSleep(false);
 const zoomSlider=document.querySelector('#zoomPosition'),zoomMessage=document.querySelector('#zoomMessage'),zoomInvert=document.querySelector('#zoomInvert');
 let lastZoomStatus=null;
 let dpadZoomActive=false,lastDpadDirection=0;
@@ -330,7 +350,12 @@ async function refreshStatus(){
     document.querySelector('#pose').textContent=Array.isArray(s.pose)?'Tilt '+(s.pose[0]/10).toFixed(1)+'°, roll '+(s.pose[1]/10).toFixed(1)+'°, pan '+(s.pose[2]/10).toFixed(1)+'°':'Position : indisponible';
     label.textContent=linkReady?'BLE connecté':s.ble?'BLE connecté — commandes indisponibles pour ce modèle':'Ronin déconnecté — reconnexion en cours';
     document.querySelector('#battery').textContent=s.battery===null?'Batterie : indisponible':'Batterie : '+s.battery+' %';
-  }catch(e){linkReady=false;session=null;resetLocal();resetZoomClient();document.querySelector('#zoomStatus').textContent='Moteur indisponible';document.querySelector('#pose').textContent='Position : indisponible';label.textContent='ESP inaccessible — nouvelle tentative automatique';document.querySelector('#battery').textContent='Batterie : indisponible'}
+    sleepingState=typeof s.sleeping==='boolean'?s.sleeping:null;
+    document.querySelector('#sleepState').textContent=sleepingState===null?'Veille : indisponible':sleepingState?'Ronin en veille':'Ronin réveillé';
+    document.querySelector('#sleepButton').disabled=sleepBusy||!linkReady||sleepingState!==false;
+    document.querySelector('#wakeButton').disabled=sleepBusy||!linkReady||sleepingState!==true;
+    if(sleepingState!==null)document.querySelector('#sleepMessage').textContent='';
+  }catch(e){linkReady=false;session=null;resetLocal();resetZoomClient();sleepingState=null;document.querySelector('#sleepState').textContent='Veille : indisponible';document.querySelector('#sleepButton').disabled=true;document.querySelector('#wakeButton').disabled=true;document.querySelector('#zoomStatus').textContent='Moteur indisponible';document.querySelector('#pose').textContent='Position : indisponible';label.textContent='ESP inaccessible — nouvelle tentative automatique';document.querySelector('#battery').textContent='Batterie : indisponible'}
   finally{clearTimeout(timer);statusBusy=false}
 }
 refreshStatus();setInterval(refreshStatus,1000);

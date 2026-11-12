@@ -52,6 +52,9 @@ static bool telemetry_subscribed = false;
 static telemetry_parser_t telemetry_parser = {0};
 static uint8_t battery_percent = 0u;
 static int64_t battery_time_us = 0;
+static int64_t sleep_time_us = 0;
+static bool sleeping = false;
+static uint32_t sleep_session = 0u;
 static int16_t latest_pose[3] = {0};
 static int64_t pose_time_us = 0;
 static int64_t focus_time_us = 0;
@@ -449,6 +452,43 @@ void ronin_ble_invalidate(void)
     if(zoom_motion.active) { zoom_motion_cancel(&zoom_motion, ZOOM_ERROR_UNAVAILABLE); }
     portEXIT_CRITICAL(&lock);
 }
+bool ronin_ble_sleep_state(bool *value)
+{
+    if(value == NULL) { return false; }
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&lock);
+    bool valid = (target_model == RONIN_MODEL_RS3) && link_matches_target_locked() &&
+                 (sleep_session == link_session) && (sleep_time_us != 0) &&
+                 ((now - sleep_time_us) <= 10000000);
+    if(valid) { *value = sleeping; }
+    portEXIT_CRITICAL(&lock);
+    return valid;
+}
+bool ronin_ble_set_sleep(uint32_t session, bool sleep)
+{
+    uint16_t ch = 0u, handle = 0u;
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&lock);
+    bool ok = (target_model == RONIN_MODEL_RS3) && link_matches_target_locked() &&
+              (write_handle != 0u) && (session == link_session) &&
+              (sleep_session == session) && (sleep_time_us != 0) &&
+              ((now - sleep_time_us) <= 10000000) && (sleeping != sleep) &&
+              (requested_yaw == 0) && (requested_pitch == 0) && !zoom_motion.active;
+    if(ok)
+    {
+        ch = conn; handle = write_handle;
+        sleep_time_us = 0;
+    }
+    portEXIT_CRITICAL(&lock);
+    if(!ok) { return false; }
+    uint8_t frame[16] = {0};
+    duml_sleep(frame, 0u, sleep);
+    portENTER_CRITICAL(&lock);
+    bool current = (target_model == RONIN_MODEL_RS3) && link_matches_target_locked() &&
+                   (conn == ch) && (write_handle == handle) && (link_session == session);
+    portEXIT_CRITICAL(&lock);
+    return current && (ble_gattc_write_no_rsp_flat(ch, handle, frame, sizeof(frame)) == 0);
+}
 bool ronin_ble_goto(uint32_t session, const int16_t pose[3], uint8_t duration)
 {
     if((pose == NULL) || (duration < 5u) || (duration > 50u)) { return false; }
@@ -780,6 +820,18 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                         focus_position = telemetry_parser.focus_position;
                         focus_calibrated = telemetry_parser.focus_calibrated;
                         focus_time_us = now;
+                    }
+                    portEXIT_CRITICAL(&lock);
+                }
+                if(telemetry_parser.sleep_updated)
+                {
+                    int64_t now = esp_timer_get_time();
+                    portENTER_CRITICAL(&lock);
+                    if((target_model == RONIN_MODEL_RS3) && link_matches_target_locked())
+                    {
+                        sleeping = telemetry_parser.sleeping;
+                        sleep_time_us = now;
+                        sleep_session = link_session;
                     }
                     portEXIT_CRITICAL(&lock);
                 }
