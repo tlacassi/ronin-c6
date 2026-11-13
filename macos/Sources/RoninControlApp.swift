@@ -79,7 +79,7 @@ private struct SetupView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Configurer un ESP32-C6").font(.largeTitle.weight(.semibold))
-                Text("Branche l’ESP en USB. Le firmware et l’outil de flash sont intégrés à l’app.")
+                Text("Branche l’ESP en USB. L’outil de flash et un firmware de secours sont intégrés à l’app.")
                 Picker("ESP connecté", selection: $selectedPort) {
                     Text("Choisir un port…").tag("")
                     ForEach(ports, id: \.self) { Text($0).tag($0) }
@@ -88,8 +88,18 @@ private struct SetupView: View {
                 GroupBox("Firmware") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Pour un nouvel ESP ou une mise à jour. Les presets et le réseau enregistré sont conservés.")
-                        Button("Installer le firmware intégré") { setup.flash(port: selectedPort) }
-                            .disabled(setup.isRunning || selectedPort.isEmpty)
+                        Toggle("Récupérer automatiquement le dernier firmware quand Internet est disponible", isOn: $setup.autoUpdate)
+                        Text("Sans Internet, l’app utilise le dernier firmware téléchargé, ou celui intégré s’il est plus récent.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Text(setup.firmwareInfo).textSelection(.enabled)
+                            if setup.isCheckingFirmware { ProgressView().controlSize(.small) }
+                            Spacer()
+                            Button("Vérifier maintenant") { setup.refreshFirmware() }
+                                .disabled(setup.isRunning || setup.isCheckingFirmware)
+                        }
+                        Button("Installer le firmware") { setup.flash(port: selectedPort) }
+                            .disabled(setup.isRunning || setup.isCheckingFirmware || selectedPort.isEmpty)
                     }.padding(8)
                 }
                 GroupBox("Réseau Wi‑Fi 2,4 GHz") {
@@ -113,7 +123,10 @@ private struct SetupView: View {
                 TextEditor(text: $setup.output).font(.system(.caption, design: .monospaced)).frame(minHeight: 180)
             }.padding(24)
         }
-        .onAppear { updatePorts() }
+        .onAppear {
+            updatePorts()
+            if setup.autoUpdate { setup.refreshFirmware() }
+        }
         .onReceive(refresh) { _ in if !setup.isRunning { updatePorts() } }
     }
     private func updatePorts() {

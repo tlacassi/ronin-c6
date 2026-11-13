@@ -9,6 +9,27 @@ L’utilisateur n’a besoin que de `ESP Ronin Control.app` (macOS 13 ou supéri
 3. Le flash vérifie les empreintes avant écriture et vérifie les données écrites. Il écrit le bootloader à `0x0`, la table des partitions à `0x8000` et l’application à `0x10000`. La zone NVS à `0x9000` reste intacte : presets, cible BLE et Wi‑Fi existant sont conservés. Ne pas débrancher pendant l’écriture.
 4. Les anciens firmwares doivent être mis à jour une première fois pour disposer du protocole de configuration USB.
 
+## Mise à jour automatique du firmware
+
+Dans **Configurer l’ESP → Firmware**, l’option *Récupérer automatiquement le dernier firmware* est activée par défaut. L’app interroge alors la dernière release GitHub du dépôt, au lancement de l’écran et avant chaque installation.
+
+- **Internet disponible et version plus récente :** le firmware est téléchargé, vérifié puis conservé dans `~/Library/Application Support/ESP Ronin Control/Firmware/current`.
+- **Pas d’Internet, release sans firmware, fichier invalide ou serveur injoignable :** l’app se replie sur le dernier firmware téléchargé, ou sur celui intégré s’il est plus récent. L’installation n’est jamais bloquée par le réseau.
+- **Option désactivée :** aucune connexion réseau ; l’app utilise le plus récent des firmwares déjà présents sur le Mac. Le bouton *Vérifier maintenant* télécharge à la demande.
+
+Sécurité : HTTPS uniquement, hôtes limités à `github.com` et `*.githubusercontent.com` (redirections comprises), tailles bornées, SHA-256 comparé au manifeste et à la somme annoncée par GitHub, puis contrôle des en-têtes d’image (magie ESP, puce ESP32-C6, table des partitions). Le fichier est revérifié juste avant l’écriture. La confiance repose sur le compte GitHub du dépôt : les fichiers ne sont pas signés cryptographiquement.
+
+### Publier un firmware pour les apps installées — mainteneurs uniquement
+
+Après le build standalone, joindre les fichiers à la release (le nom du tag, par exemple `v2.1.0`, sert de numéro de version) :
+
+```sh
+python3 macos/package_firmware_assets.py
+gh release upload vX.Y.Z macos/dist/firmware-assets/* --repo tlacassi/ronin-c6
+```
+
+Une release sans ces fichiers est simplement ignorée par les apps.
+
 ## Régler le réseau sans reflasher
 
 L’USB reste utilisable même si le réseau enregistré est absent ou incorrect. Saisir le SSID 2,4 GHz et le mot de passe, puis **Enregistrer le Wi‑Fi sur l’ESP**. Le réseau est enregistré dans la NVS par le SDK Wi-Fi et l’ESP essaie immédiatement de le rejoindre. L’app affiche l’adresse IP obtenue ou l’échec de connexion ; un mauvais mot de passe peut être corrigé en USB. **Lire la configuration** affiche le SSID, l’état et l’adresse IP, jamais le mot de passe.

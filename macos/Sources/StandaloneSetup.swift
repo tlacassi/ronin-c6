@@ -106,18 +106,87 @@ final class StandaloneSetup: ObservableObject {
     @Published var status = "Prêt"
     @Published var deviceSSID = ""
     @Published var deviceIP = ""
+    @Published var firmwareInfo = "Firmware : recherche…"
+    @Published var isCheckingFirmware = false
+    /// Pull the latest published firmware when Internet is reachable; otherwise use what is already on this Mac.
+    @Published var autoUpdate: Bool {
+        didSet { UserDefaults.standard.set(autoUpdate, forKey: Self.autoUpdateKey) }
+    }
+
+    private static let autoUpdateKey = "autoUpdateFirmware"
+    private let source = FirmwareSource()
+
+    init() {
+        autoUpdate = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool ?? true
+        firmwareInfo = describeLocal()
+    }
+
+    private var bundleVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    }
+
+    private func localImages() -> (bundled: FirmwareImage?, cached: FirmwareImage?, best: FirmwareImage?) {
+        let bundled = FirmwareStore.bundled(resources: Bundle.main.resourceURL, version: bundleVersion)
+        let cached = FirmwareStore.cached()
+        return (bundled, cached, FirmwareStore.bestLocal(bundled: bundled, cached: cached))
+    }
+
+    private func describeLocal() -> String {
+        guard let best = localImages().best else { return "Firmware : aucun firmware valide disponible." }
+        return "Firmware prêt : \(best.label)"
+    }
+
+    /// Looks for a newer firmware online. Returns a note for the log and never throws:
+    /// any failure (offline, no release, bad digest) falls back to the local firmware.
+    private func pullLatest() async -> String {
+        let local = localImages()
+        do {
+            let result = try await FirmwareStore.pull(source: source, localBest: local.best)
+            switch result {
+            case let .downloaded(image): return "Dernier firmware téléchargé : \(image.label).\n"
+            case let .upToDate(version): return "Firmware à jour (v\(version)).\n"
+            }
+        } catch let error as URLError {
+            let offline = [.notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost,
+                           .dnsLookupFailed, .timedOut, .dataNotAllowed, .internationalRoamingOff].contains(error.code)
+            return offline ? "Pas d’Internet : repli sur le firmware déjà présent sur ce Mac.\n"
+                           : "Mise à jour du firmware impossible (\(error.localizedDescription)) : repli sur le firmware présent.\n"
+        } catch {
+            return "Mise à jour du firmware ignorée (\(error.localizedDescription)) : repli sur le firmware présent.\n"
+        }
+    }
+
+    /// Manual or automatic refresh of the cached firmware, without flashing.
+    func refreshFirmware() {
+        guard !isCheckingFirmware, !isRunning else { return }
+        isCheckingFirmware = true
+        firmwareInfo = "Firmware : vérification en ligne…"
+        Task {
+            let note = await pullLatest()
+            firmwareInfo = describeLocal()
+            output += note
+            isCheckingFirmware = false
+        }
+    }
 
     func flash(port: String) {
-        guard !isRunning else { return }
+        guard !isRunning, !isCheckingFirmware else { return }
         isRunning = true
-        status = "Flash de l’ESP32-C6…"
-        output = "Écriture du firmware intégré, sans effacer les presets ni le Wi‑Fi enregistré.\n"
+        status = autoUpdate ? "Recherche du dernier firmware…" : "Préparation du firmware…"
+        output = ""
         let resources = Bundle.main.resourceURL
         Task {
             do {
-                let log = try await Task.detached { try Self.flashBundledFirmware(port: port, resources: resources) }.value
+                if autoUpdate { output += await pullLatest() }
+                guard let image = localImages().best else {
+                    throw SetupFailure.message("Aucun firmware valide : réinstalle l’app ou reconnecte-toi à Internet.")
+                }
+                firmwareInfo = "Firmware prêt : \(image.label)"
+                status = "Flash de l’ESP32-C6 avec \(image.label)…"
+                output += "Écriture du firmware \(image.label), sans effacer les presets ni le Wi‑Fi enregistré.\n"
+                let log = try await Task.detached { try Self.flashFirmware(port: port, resources: resources, firmware: image.directory) }.value
                 output += log
-                status = "Firmware installé. Tu peux maintenant régler le Wi‑Fi par USB."
+                status = "Firmware \(image.label) installé. Tu peux maintenant régler le Wi‑Fi par USB."
             } catch { status = error.localizedDescription }
             isRunning = false
         }
@@ -165,7 +234,7 @@ final class StandaloneSetup: ObservableObject {
         status = value.connected ? "ESP connecté à \(value.ssid) — http://\(value.ip)/" : "ESP non connecté — réseau enregistré : \(value.ssid.isEmpty ? "aucun" : value.ssid)"
     }
 
-    nonisolated private static func flashBundledFirmware(port: String, resources: URL?) throws -> String {
+    nonisolated private static func flashFirmware(port: String, resources: URL?, firmware: URL) throws -> String {
         guard port.hasPrefix("/dev/cu."), FileManager.default.fileExists(atPath: port), let resources else {
             throw SetupFailure.message("Choisis un ESP32-C6 branché en USB.")
         }
@@ -175,17 +244,9 @@ final class StandaloneSetup: ObservableObject {
         let architecture = "x86_64"
         #endif
         let tool = resources.appendingPathComponent("Tools/\(architecture)/esptool")
-        let firmware = resources.appendingPathComponent("Firmware")
-        let manifestData = try Data(contentsOf: firmware.appendingPathComponent("manifest.json"))
-        guard let hashes = try JSONSerialization.jsonObject(with: manifestData) as? [String: String] else {
-            throw SetupFailure.message("Manifeste du firmware invalide.")
-        }
-        let files = ["bootloader.bin", "partition-table.bin", "ronin_c6.bin"]
-        for name in files {
-            let data = try Data(contentsOf: firmware.appendingPathComponent(name))
-            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-            guard hashes[name] == digest else { throw SetupFailure.message("Le firmware intégré est corrompu : \(name).") }
-        }
+        // Re-verify right before writing: the files may have changed since they were selected.
+        do { try FirmwareStore.verify(directory: firmware) } catch { throw SetupFailure.message(error.localizedDescription) }
+        let files = FirmwareStore.files
         guard FileManager.default.isExecutableFile(atPath: tool.path) else { throw SetupFailure.message("L’outil de flash intégré est manquant.") }
         let process = Process()
         process.executableURL = tool
