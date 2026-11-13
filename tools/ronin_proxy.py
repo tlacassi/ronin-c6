@@ -3,16 +3,96 @@
 import argparse
 import http.client
 import http.server
+import re
+import select
+import socket
+import threading
 import urllib.parse
 
 GET_PATHS = {'/', '/gamepad.js', '/status', '/devices', '/presets', '/zoom/presets'}
 POST_PATHS = {'/move', '/select', '/discover', '/resume', '/disconnect', '/preset/save', '/preset/goto', '/preset/delete', '/zoom', '/zoom/keepalive', '/zoom/stop', '/sleep'}
 
 
+WS_KEY = re.compile(r'^[A-Za-z0-9+/]{22}==$')
+MAX_WEBSOCKETS = 3
+
+
 def make_handler(target):
+    # The ESP accepts a WebSocket only when Origin names the same host as Host, so the proxy checks the
+    # browser side itself and presents the ESP's own authority upstream. After the 101 reply the
+    # connection is an opaque byte tunnel: frames are never parsed or rewritten, and closing either side
+    # closes the other, which makes the ESP stop motion exactly as for a direct socket.
+    slots = threading.BoundedSemaphore(MAX_WEBSOCKETS)
+    authority = target.hostname + (f':{target.port}' if target.port not in (None, 80) else '')
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            self.forward('GET')
+            if self.path == '/ws':
+                self.relay_websocket()
+            else:
+                self.forward('GET')
+
+        def relay_websocket(self):
+            port = self.server.server_port
+            host = self.headers.get('Host', '')
+            if host not in {f'127.0.0.1:{port}', f'localhost:{port}'} or self.headers.get('Origin') != f'http://{host}':
+                self.send_error(403)
+                return
+            key = self.headers.get('Sec-WebSocket-Key', '')
+            if ('websocket' not in self.headers.get('Upgrade', '').lower() or
+                    'upgrade' not in self.headers.get('Connection', '').lower() or
+                    self.headers.get('Sec-WebSocket-Version') != '13' or not WS_KEY.match(key)):
+                self.send_error(400)
+                return
+            if not slots.acquire(blocking=False):
+                self.send_error(503)
+                return
+            upstream = None
+            try:
+                try:
+                    upstream = socket.create_connection((target.hostname, target.port or 80), timeout=3)
+                    upstream.sendall((f'GET /ws HTTP/1.1\r\nHost: {authority}\r\nOrigin: http://{authority}\r\n'
+                                      f'Upgrade: websocket\r\nConnection: Upgrade\r\n'
+                                      f'Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
+                    reply = b''
+                    while b'\r\n\r\n' not in reply:
+                        chunk = upstream.recv(1024)
+                        if not chunk or len(reply) > 4096:
+                            raise OSError('bad upstream handshake')
+                        reply += chunk
+                except OSError:
+                    self.send_error(502, 'ESP inaccessible')
+                    return
+                head, _, rest = reply.partition(b'\r\n\r\n')
+                if not head.startswith(b'HTTP/1.1 101'):
+                    self.send_error(502, 'WebSocket refused by the ESP')
+                    return
+                client = self.connection
+                client.sendall(head + b'\r\n\r\n' + rest)
+                self.close_connection = True
+                upstream.settimeout(None)
+                client.settimeout(None)
+                self.tunnel(client, upstream)
+            finally:
+                if upstream is not None:
+                    upstream.close()
+                slots.release()
+
+        @staticmethod
+        def tunnel(client, upstream):
+            sockets = [client, upstream]
+            try:
+                while True:
+                    readable, _, failed = select.select(sockets, [], sockets, 30)
+                    if failed:
+                        return
+                    for source in readable:
+                        data = source.recv(4096)
+                        if not data:
+                            return
+                        (upstream if source is client else client).sendall(data)
+            except OSError:
+                return
 
         def do_POST(self):
             self.forward('POST')

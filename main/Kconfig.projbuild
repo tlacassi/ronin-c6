@@ -11,4 +11,11 @@ config RONIN_BLE_NAME
 config RONIN_BLE_TRACE
     bool "Trace received DUML frames over the local serial console"
     default n
+config RONIN_LED_GPIO
+    int "On-board RGB (WS2812) LED GPIO, -1 to disable"
+    default 8
+config RONIN_LED_BRIGHTNESS
+    int "Default status LED brightness in percent (adjustable from the web page)"
+    range 1 100
+    default 8
 endmenu

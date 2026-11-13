@@ -29,6 +29,16 @@ int main(void)
     bad_sleep[16] = (uint8_t)sleep_crc; bad_sleep[17] = (uint8_t)(sleep_crc >> 8u);
     feed(&parser, bad_sleep, sizeof(bad_sleep), &battery);
     assert(parser.frame_valid && !parser.sleep_updated);
+    /* RS 4 Pro frames captured while the gimbal was put to sleep and woken. */
+    const uint8_t pro_awake[] = {0x55,0x12,0x04,0xc7,0x04,0x02,0x1c,0xa3,0x00,0x04,0x27,0x00,0x80,0x00,0x00,0x00,0xce,0xb0};
+    const uint8_t pro_entering[] = {0x55,0x12,0x04,0xc7,0x04,0x02,0x00,0x2d,0x00,0x04,0x27,0x00,0x80,0x00,0x02,0x01,0x12,0x86};
+    const uint8_t pro_asleep[] = {0x55,0x12,0x04,0xc7,0x04,0x02,0x70,0x2b,0x00,0x04,0x27,0x00,0x80,0x00,0x00,0x01,0x21,0x3e};
+    feed(&parser, pro_awake, sizeof(pro_awake), &battery);
+    assert(parser.sleep_updated && !parser.sleeping);
+    feed(&parser, pro_entering, sizeof(pro_entering), &battery);
+    assert(parser.sleep_updated && parser.sleeping);
+    feed(&parser, pro_asleep, sizeof(pro_asleep), &battery);
+    assert(parser.sleep_updated && parser.sleeping);
     assert(feed(&parser, frame, 12u, &battery) == 0u);
     assert(feed(&parser, frame + 12u, sizeof(frame) - 12u, &battery) == 1u);
     assert(battery == 97u);

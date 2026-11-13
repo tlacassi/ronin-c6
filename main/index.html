@@ -29,13 +29,30 @@ small{display:block;color:#a4b6c3;line-height:1.5;margin:1rem}
 fieldset{border:0;padding:0;margin:0}
 #zoomPosition{width:min(26rem,90%)}
 #zoomInvert[aria-pressed="true"]{background:#26695f}
+#ledToggle{position:fixed;top:.6rem;right:.6rem;width:2.6rem;height:2.6rem;padding:0;border-radius:50%;font-size:1.3rem;line-height:1;z-index:5}
+#ledToggle.off{opacity:.45;filter:grayscale(1)}
+#ledPanel{position:fixed;top:3.6rem;right:.6rem;width:min(16rem,calc(100% - 1.2rem));background:#17232e;border:1px solid #526779;border-radius:12px;padding:.9rem;z-index:5;text-align:left;box-shadow:0 6px 20px #0008}
+#ledPanel[hidden]{display:none}
+#ledPanel input[type=range]{width:100%}
+#ledPanel .row{display:flex;gap:.5rem;margin-top:.6rem}
+#ledPanel .row button{flex:1;padding:.5rem}
+#wsStatus{font-size:.85rem;color:#a4b6c3;margin:.2rem 0}
+#wsStatus.warn{color:#ffcd73}
 #gamepadStatus{display:inline-block;font-size:1.5rem;filter:grayscale(1);opacity:.35}
 #gamepadStatus.connected{filter:none;opacity:1}
 </style>
 </head>
 <body>
+<button type="button" class="secondary" id="ledToggle" aria-label="Réglage de la LED" aria-expanded="false" title="LED de la carte">💡</button>
+<div id="ledPanel" hidden>
+  <label for="ledBrightness">LED de la carte : <span id="ledValue">—</span></label>
+  <input id="ledBrightness" type="range" min="0" max="100" value="8" step="1">
+  <div class="row"><button type="button" class="secondary" id="ledOff">Éteindre</button><button type="button" class="secondary" id="ledClose">Fermer</button></div>
+  <small id="ledMessage" style="margin:.6rem 0 0"></small>
+</div>
 <h1>Ronin C6</h1>
 <p id="status">Recherche du Ronin…</p>
+<p id="wsStatus">Liaison : HTTP</p>
 <p id="pose">Position : indisponible</p>
 <p id="battery">Batterie : indisponible</p>
 <p id="sleepState">Veille : indisponible</p>
@@ -200,6 +217,91 @@ const nativeGamepadApp=window.__RONIN_NATIVE_APP__===true;let nativeGamepadConne
 window.addEventListener('ronin-native-gamepad',event=>{nativeGamepadConnected=event.detail?.connected===true;gamepadStatus.className=nativeGamepadConnected?'connected':'';gamepadStatus.title=nativeGamepadConnected?'Manette détectée':'Manette non détectée';gamepadStatus.setAttribute('aria-label',gamepadStatus.title)});
 let active=false,x=0,y=0,inflight=false,session=null,linkReady=false,lastStatus=0,focused=true,statusBusy=false,gamepadMoving=false,motionFlight=null;
 let sleepBusy=false,sleepingState=null;
+// ---- Optional WebSocket transport. Every HTTP route stays available as the fallback. ----
+// Frames are one letter + payload; see main/ws_protocol.h. Commands go over the socket only while this
+// page is the controller, the heartbeat is alive and the hello matches the current BLE session.
+const wsLabel=document.querySelector('#wsStatus');
+const ws={sock:null,open:false,controller:false,observer:false,helloFor:null,helloSent:null,helloAt:0,stateAt:0,pongAt:0,pingAt:0,connectAt:0,rtt:null,degraded:false,backoff:500,nextTry:0,wanted:true};
+function wsUsable(){return ws.open&&ws.controller&&session!==null&&ws.helloFor===session&&!ws.degraded&&ws.sock.bufferedAmount<4096}
+function wsStateFresh(){return ws.open&&Date.now()-ws.stateAt<1500}
+function wsRender(){
+  let text='Liaison : HTTP';
+  if(ws.open)text=ws.degraded?'Liaison dégradée — repli HTTP':ws.controller?'Liaison : WebSocket'+(ws.rtt===null?'':' · RTT '+ws.rtt+' ms'):ws.observer?'Liaison : WebSocket en lecture seule (une autre page pilote) · commandes en HTTP':'Liaison : WebSocket en cours d’ouverture';
+  wsLabel.textContent=text;wsLabel.className=ws.degraded||(ws.rtt!==null&&ws.rtt>250)?'warn':'';
+}
+function wsSend(text){if(!ws.open)return false;try{ws.sock.send(text);return true}catch(e){return false}}
+function wsDetach(){
+  const sock=ws.sock;ws.sock=null;ws.open=false;ws.controller=false;ws.observer=false;ws.helloFor=null;ws.helloSent=null;ws.rtt=null;ws.degraded=false;
+  if(sock){sock.onopen=sock.onmessage=sock.onclose=sock.onerror=null;try{sock.close()}catch(e){}}
+  wsRender();
+}
+// Socket gone or unusable: stop everything, back off, and let HTTP take over. Motion only resumes after
+// the stick or trigger was released and recentered (same re-arm rule as every other link loss).
+function wsLost(){
+  const hadControl=ws.controller;
+  wsDetach();ws.nextTry=Date.now()+ws.backoff;ws.backoff=Math.min(ws.backoff*2,8000);
+  if(hadControl)stopAll();
+}
+function wsConnect(){
+  if(typeof WebSocket!=='function'||typeof location!=='object'||!location.host||ws.sock||!ws.wanted)return;
+  let sock;
+  try{sock=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws')}
+  catch(e){ws.nextTry=Date.now()+ws.backoff;ws.backoff=Math.min(ws.backoff*2,8000);return}
+  ws.sock=sock;ws.connectAt=Date.now();
+  sock.onopen=()=>{if(ws.sock!==sock)return;ws.open=true;ws.stateAt=0;ws.pongAt=Date.now();ws.pingAt=0;wsRender()};
+  sock.onmessage=ev=>{if(ws.sock===sock)wsMessage(String(ev.data))};
+  sock.onclose=()=>{if(ws.sock===sock)wsLost()};
+  sock.onerror=()=>{if(ws.sock===sock)wsLost()};
+}
+function wsHello(){
+  if(!ws.open||session===null||ws.helloFor===session)return;
+  if(Date.now()-ws.helloAt<(ws.observer?2000:1000))return;
+  ws.helloAt=Date.now();ws.helloSent=session;wsSend('h'+session);
+}
+function wsError(code){
+  if(code==='sess'||code==='role'){ws.controller=false;ws.helloFor=null;resetLocal();wsHello();wsRender()}
+  else if(code==='link')resetLocal();
+  else if(code==='zoom'){zoomOwned=false;zoomMessage.textContent='Moteur ou liaison indisponible'}
+  else if(code==='busy'){ws.observer=true;ws.controller=false;ws.helloFor=null;wsRender()}
+  else wsLost();
+}
+function wsMessage(text){
+  const kind=text[0],rest=text.slice(1);
+  if(kind==='s'){
+    let s;try{s=JSON.parse(rest)}catch(e){wsLost();return}
+    ws.stateAt=Date.now();
+    try{applyStatus(s)}catch(e){statusLost()}
+    wsHello();
+  }else if(kind==='o'){
+    const sent=Number(rest),now=Date.now();
+    if(/^[0-9]{1,10}$/.test(rest)&&sent<=4294967295){
+      const rtt=(now%4294967296-sent+4294967296)%4294967296;
+      ws.pongAt=now;ws.rtt=rtt<60000?rtt:null;ws.degraded=false;wsRender();
+    }
+  }else if(kind==='r'){
+    ws.backoff=500;
+    if(rest==='1'){ws.controller=true;ws.observer=false;ws.helloFor=ws.helloSent}
+    else{ws.controller=false;ws.observer=true;ws.helloFor=null}
+    wsRender();
+  }else if(kind==='e')wsError(rest);
+}
+setInterval(()=>{
+  const now=Date.now();
+  if(!ws.open){
+    if(ws.sock){if(now-ws.connectAt>4000)wsLost()}
+    else if(now>=ws.nextTry)wsConnect();
+    return;
+  }
+  if(now-ws.pingAt>=1000){ws.pingAt=now;wsSend('p'+(now%4294967296))}
+  if(now-ws.pongAt>6000){wsLost();return}
+  if(!ws.degraded&&now-ws.pongAt>2500){ws.degraded=true;if(ws.controller)stopAll()}
+  wsHello();wsRender();
+},500);
+function wsVisibility(){
+  ws.wanted=!document.hidden;
+  if(document.hidden&&ws.sock){const hadControl=ws.controller;wsDetach();ws.nextTry=0;if(hadControl)stopAll()}
+}
+window.addEventListener('pagehide',()=>{ws.wanted=false;wsDetach()});
 async function setSleep(sleep){
   if(sleepBusy||!linkReady||session===null||sleepingState===null||sleepingState===sleep)return;
   sleepBusy=true;document.querySelector('#sleepButton').disabled=true;document.querySelector('#wakeButton').disabled=true;
@@ -222,7 +324,14 @@ let zoomReady=false,zoomOwned=false,zoomDragging=false,zoomInflight=false,zoomPe
 function resetZoomClient(){shortcuts.reset();dpadZoomActive=false;lastDpadDirection=0;zoomOwned=false;zoomPending=null;zoomReady=false;zoomDragging=false;document.querySelector('#zoomControls').disabled=true}
 async function pumpZoom(){
   if(zoomInflight||!zoomPending)return;
-  const command=zoomPending;zoomPending=null;zoomInflight=true;
+  const command=zoomPending;zoomPending=null;
+  if(wsUsable()&&command.session===session&&wsSend(command.stop?'x':'z'+command.position+','+command.speed)){
+    if(command.stop)zoomOwned=false;
+    else{zoomOwned=true;zoomAcceptedAt=Date.now();zoomMessage.textContent='Cible : '+zoomPercent(command.position)+' %'}
+    if(zoomPending)pumpZoom();
+    return;
+  }
+  zoomInflight=true;
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),800);
   try{
     const r=await fetch(command.stop?'/zoom/stop':'/zoom',{method:'POST',headers:{'Content-Type':'text/plain','X-Ronin-Session':String(command.session)},body:command.stop?'':[command.position,command.speed].join(','),signal:controller.signal});
@@ -272,6 +381,7 @@ zoomInvert.onclick=()=>{
 renderZoomDirection();
 setInterval(()=>{
   if(!zoomOwned||!zoomReady||session===null||!focused||document.hidden)return;
+  if(wsUsable()){wsSend('k');return}
   fetch('/zoom/keepalive',{method:'POST',headers:{'X-Ronin-Session':String(session)},body:''}).then(r=>{if(!r.ok)zoomOwned=false}).catch(()=>{zoomOwned=false});
 },500);
 function updateZoom(status){
@@ -291,6 +401,7 @@ function neutral(){resetLocal();return send()}
 function send(){
   if(motionFlight)return motionFlight;
   if(session===null)return Promise.resolve(false);
+  if(wsUsable()&&wsSend('m'+x+','+y))return Promise.resolve(true);
   inflight=true;const sentX=x,sentY=y,sentSession=session,controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),800);
   motionFlight=(async()=>{
@@ -309,7 +420,7 @@ pad.onpointermove=e=>{if(active)position(e)};pad.onpointerup=neutral;pad.onpoint
 document.querySelector('#stop').onclick=stopAll;
 function stopForegroundControls(){if(active||gamepadMoving||x!==0||y!==0)neutral();else resetLocal();shortcuts.reset();lastDpadDirection=0;if(zoomDragging||zoomOwned||dpadZoomActive)stopZoom()}
 window.addEventListener('blur',()=>{focused=false;if(nativeGamepadApp)stopForegroundControls();else stopAll()});window.addEventListener('focus',()=>{focused=true});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){if(nativeGamepadApp)stopForegroundControls();else stopAll()}});
+document.addEventListener('visibilitychange',()=>{wsVisibility();if(document.hidden){if(nativeGamepadApp)stopForegroundControls();else stopAll()}});
 window.addEventListener('gamepaddisconnected',()=>{cancelDpadZoom();if(gamepadMoving)neutral();else control.reset()});
 setInterval(()=>{
   let pads=[];try{if(typeof navigator.getGamepads==='function')pads=Array.from(navigator.getGamepads()).filter(Boolean)}catch(e){}
@@ -340,10 +451,7 @@ setInterval(()=>{
   if(state.moving||gamepadMoving)send();
   gamepadMoving=state.moving;
 },100);
-async function refreshStatus(){
-  if(statusBusy)return;statusBusy=true;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),900);
-  try{
-    let r=await fetch('/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error();let s=await r.json();
+function applyStatus(s){
     if(!Number.isInteger(s.session)||s.session<0||s.session>4294967295)throw new Error();
     if(session!==s.session||!s.ble||!s.controlEnabled){resetLocal();resetZoomClient()}
     session=s.session;linkReady=s.ble===true&&s.controlEnabled===true;lastStatus=Date.now();updateZoom(s);
@@ -355,10 +463,33 @@ async function refreshStatus(){
     document.querySelector('#sleepButton').disabled=sleepBusy||!linkReady||sleepingState!==false;
     document.querySelector('#wakeButton').disabled=sleepBusy||!linkReady||sleepingState!==true;
     if(sleepingState!==null)document.querySelector('#sleepMessage').textContent='';
-  }catch(e){linkReady=false;session=null;resetLocal();resetZoomClient();sleepingState=null;document.querySelector('#sleepState').textContent='Veille : indisponible';document.querySelector('#sleepButton').disabled=true;document.querySelector('#wakeButton').disabled=true;document.querySelector('#zoomStatus').textContent='Moteur indisponible';document.querySelector('#pose').textContent='Position : indisponible';label.textContent='ESP inaccessible — nouvelle tentative automatique';document.querySelector('#battery').textContent='Batterie : indisponible'}
+}
+function statusLost(){linkReady=false;session=null;resetLocal();resetZoomClient();sleepingState=null;document.querySelector('#sleepState').textContent='Veille : indisponible';document.querySelector('#sleepButton').disabled=true;document.querySelector('#wakeButton').disabled=true;document.querySelector('#zoomStatus').textContent='Moteur indisponible';document.querySelector('#pose').textContent='Position : indisponible';label.textContent='ESP inaccessible — nouvelle tentative automatique';document.querySelector('#battery').textContent='Batterie : indisponible'}
+async function refreshStatus(){
+  if(statusBusy||wsStateFresh())return;statusBusy=true;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),900);
+  try{
+    let r=await fetch('/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error();applyStatus(await r.json());
+  }catch(e){statusLost()}
   finally{clearTimeout(timer);statusBusy=false}
 }
 refreshStatus();setInterval(refreshStatus,1000);
+(function(){
+  const toggle=document.querySelector('#ledToggle'),panel=document.querySelector('#ledPanel'),slider=document.querySelector('#ledBrightness');
+  const value=document.querySelector('#ledValue'),message=document.querySelector('#ledMessage'),offButton=document.querySelector('#ledOff');
+  let lastOn=8;
+  function show(pct){slider.value=pct;value.textContent=pct===0?'éteinte':pct+' %';toggle.classList.toggle('off',pct===0);offButton.textContent=pct===0?'Rallumer':'Éteindre';if(pct>0)lastOn=pct}
+  async function send(pct){
+    try{const r=await fetch('/led',{method:'POST',headers:{'Content-Type':'text/plain'},body:String(pct)});if(!r.ok)throw new Error();const d=await r.json();show(d.brightness);message.textContent=''}
+    catch(e){message.textContent='ESP inaccessible : réglage non enregistré'}
+  }
+  async function load(){try{const r=await fetch('/led',{cache:'no-store'});if(!r.ok)throw new Error();const d=await r.json();if(Number.isInteger(d.brightness))show(d.brightness)}catch(e){message.textContent='Réglage LED indisponible'}}
+  toggle.addEventListener('click',()=>{panel.hidden=!panel.hidden;toggle.setAttribute('aria-expanded',String(!panel.hidden));if(!panel.hidden)load()});
+  document.querySelector('#ledClose').addEventListener('click',()=>{panel.hidden=true;toggle.setAttribute('aria-expanded','false')});
+  slider.addEventListener('input',()=>show(Number(slider.value)));
+  slider.addEventListener('change',()=>send(Number(slider.value)));
+  offButton.addEventListener('click',()=>{const target=Number(slider.value)===0?lastOn:0;show(target);send(target)});
+  load();
+})();
 </script>
 </body>
 </html>

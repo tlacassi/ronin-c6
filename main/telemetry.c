@@ -27,12 +27,14 @@ bool telemetry_feed(telemetry_parser_t *parser, uint8_t byte, uint8_t *battery)
                  (parser->frame[9] == 0x0du) && (parser->frame[10] == 0x02u) &&
                  (length == 34u) && (parser->frame[31] <= 100u);
     if(valid) { *battery = parser->frame[31]; }
-    /* RS 3 sleep status, correlated with a physical sleep/wake cycle. */
+    /* Sleep status. RS 3: 00 00 00 00 <state>. RS 4 Pro (captured during a physical
+       sleep/wake cycle): 00 80 00 <0|2> <state>, where 2 appeared while entering sleep. */
     if(parser->frame_valid && (length == 18u) && (parser->frame[4] == 0x04u) &&
        (parser->frame[5] == 0x02u) && (parser->frame[8] == 0u) &&
        (parser->frame[9] == 0x04u) && (parser->frame[10] == 0x27u) &&
-       (parser->frame[11] == 0u) && (parser->frame[12] == 0u) &&
-       (parser->frame[13] == 0u) && (parser->frame[14] == 0u) &&
+       (parser->frame[11] == 0u) && (parser->frame[13] == 0u) &&
+       (((parser->frame[12] == 0u) && (parser->frame[14] == 0u)) ||
+        ((parser->frame[12] == 0x80u) && (parser->frame[14] <= 2u))) &&
        (parser->frame[15] <= 1u))
     {
         parser->sleeping = parser->frame[15] == 1u;

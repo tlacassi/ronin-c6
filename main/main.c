@@ -16,6 +16,8 @@
 #include "cJSON.h"
 #include "mdns.h"
 #include "network_config.h"
+#include "status_led.h"
+#include "ws_control.h"
 
 static const char *TAG = "ronin";
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -46,11 +48,10 @@ static const char *zoom_error_name(zoom_error_t error)
     default: return "unavailable";
     }
 }
-static esp_err_t status(httpd_req_t *req)
+/* Builds the /status body. Shared by GET /status and the WebSocket state push. */
+static size_t status_build(char *json, size_t capacity)
 {
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    char json[768] = {0};
+    json[0] = 0;
     uint8_t battery = 0u;
     uint32_t session = 0u;
     bool ready = false;
@@ -58,19 +59,19 @@ static esp_err_t status(httpd_req_t *req)
     bool control_enabled = ronin_ble_control_enabled();
     ronin_ble_link(&ready, &session);
     if(ronin_ble_battery(&battery))
-    { snprintf(json, sizeof(json), "{\"ble\":%s,\"protocolVerified\":%s,\"controlEnabled\":%s,\"battery\":%u,\"session\":%" PRIu32 "}", ready ? "true" : "false", protocol_verified ? "true" : "false", control_enabled ? "true" : "false", (unsigned)battery, session); }
+    { snprintf(json, capacity, "{\"ble\":%s,\"protocolVerified\":%s,\"controlEnabled\":%s,\"battery\":%u,\"session\":%" PRIu32 "}", ready ? "true" : "false", protocol_verified ? "true" : "false", control_enabled ? "true" : "false", (unsigned)battery, session); }
     else
-    { snprintf(json, sizeof(json), "{\"ble\":%s,\"protocolVerified\":%s,\"controlEnabled\":%s,\"battery\":null,\"session\":%" PRIu32 "}", ready ? "true" : "false", protocol_verified ? "true" : "false", control_enabled ? "true" : "false", session); }
+    { snprintf(json, capacity, "{\"ble\":%s,\"protocolVerified\":%s,\"controlEnabled\":%s,\"battery\":null,\"session\":%" PRIu32 "}", ready ? "true" : "false", protocol_verified ? "true" : "false", control_enabled ? "true" : "false", session); }
     int16_t pose[3] = {0};
     size_t used = strlen(json);
     if((used > 0u) && ronin_ble_pose(pose))
-    { snprintf(json + used - 1u, sizeof(json) - used + 1u, ",\"pose\":[%d,%d,%d]}", pose[0], pose[1], pose[2]); }
+    { snprintf(json + used - 1u, capacity - used + 1u, ",\"pose\":[%d,%d,%d]}", pose[0], pose[1], pose[2]); }
     ronin_ble_diagnostics_t diagnostics = {0};
     ronin_ble_diagnostics(&diagnostics);
     used = strlen(json);
     if(used > 0u)
     {
-        snprintf(json + used - 1u, sizeof(json) - used + 1u,
+        snprintf(json + used - 1u, capacity - used + 1u,
                  ",\"telemetry\":{\"subscribed\":%s,\"notifications\":%" PRIu32
                  ",\"frames\":%" PRIu32 ",\"poses\":%" PRIu32 ",\"poseAgeMs\":%" PRId32 ",\"disconnectReason\":%" PRId32 "}}",
                  diagnostics.subscribed ? "true" : "false", diagnostics.notifications,
@@ -83,7 +84,7 @@ static esp_err_t status(httpd_req_t *req)
     {
         char position[8] = "null";
         if(zoom.calibrated) { snprintf(position, sizeof(position), "%u", (unsigned)zoom.position); }
-        snprintf(json + used - 1u, sizeof(json) - used + 1u,
+        snprintf(json + used - 1u, capacity - used + 1u,
                  ",\"zoom\":{\"present\":%s,\"calibrated\":%s,\"position\":%s,"
                  "\"available\":%s,\"moving\":%s,\"target\":%u,\"error\":\"%s\"}}",
                  zoom.present ? "true" : "false", zoom.calibrated ? "true" : "false", position,
@@ -95,9 +96,17 @@ static esp_err_t status(httpd_req_t *req)
     used = strlen(json);
     if(used > 0u)
     {
-        snprintf(json + used - 1u, sizeof(json) - used + 1u, ",\"sleeping\":%s}",
+        snprintf(json + used - 1u, capacity - used + 1u, ",\"sleeping\":%s}",
                  sleep_known ? (sleeping ? "true" : "false") : "null");
     }
+    return strlen(json);
+}
+static esp_err_t status(httpd_req_t *req)
+{
+    char json[768];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    (void)status_build(json, sizeof(json));
     return httpd_resp_sendstr(req, json);
 }
 static bool read_session(httpd_req_t *req, uint32_t *session)
@@ -417,13 +426,48 @@ static esp_err_t sleep_action(httpd_req_t *req)
     }
     return httpd_resp_sendstr(req, "Sent");
 }
+static esp_err_t led_get(httpd_req_t *req)
+{
+    char l_acJson[32] = {0};
+    snprintf(l_acJson, sizeof(l_acJson), "{\"brightness\":%u}", (unsigned)status_led_brightness());
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, l_acJson);
+}
+static esp_err_t led_set(httpd_req_t *req)
+{
+    char l_acBody[4] = {0};
+    int l_iReceived = 0;
+    if((req->content_len < 1) || (req->content_len > 3))
+    { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid LED brightness"); return ESP_FAIL; }
+    while(l_iReceived < req->content_len)
+    {
+        int l_iCount = httpd_req_recv(req, l_acBody + l_iReceived, req->content_len - l_iReceived);
+        if(l_iCount <= 0) { return ESP_FAIL; }
+        l_iReceived += l_iCount;
+    }
+    unsigned l_uValue = 0u;
+    for(int i = 0; i < l_iReceived; i++)
+    {
+        if((l_acBody[i] < '0') || (l_acBody[i] > '9'))
+        { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid LED brightness"); return ESP_FAIL; }
+        l_uValue = l_uValue * 10u + (unsigned)(l_acBody[i] - '0');
+    }
+    if(l_uValue > 100u)
+    { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid LED brightness"); return ESP_FAIL; }
+    if(!status_led_set_brightness((uint8_t)l_uValue))
+    { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Storage error"); return ESP_FAIL; }
+    return led_get(req);
+}
 static void start_server(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     /* Browser polling can retain every socket across multiple open clients. */
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 1;
-    cfg.max_uri_handlers = 19;
+    cfg.max_uri_handlers = 22;
+    /* Every socket close, including LRU purges, passes here so a lost WebSocket controller stops motion. */
+    cfg.close_fn = ws_control_on_close;
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &cfg));
     const httpd_uri_t zoom_presets_uri = {.uri="/zoom/presets", .method=HTTP_GET, .handler=zoom_presets_get};
@@ -438,6 +482,10 @@ static void start_server(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &home_uri));
     const httpd_uri_t sleep_uri = {.uri="/sleep", .method=HTTP_POST, .handler=sleep_action};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &sleep_uri));
+    const httpd_uri_t led_get_uri = {.uri="/led", .method=HTTP_GET, .handler=led_get};
+    const httpd_uri_t led_set_uri = {.uri="/led", .method=HTTP_POST, .handler=led_set};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &led_get_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &led_set_uri));
     const httpd_uri_t page_uri = {.uri="/", .method=HTTP_GET, .handler=page};
     const httpd_uri_t script_uri = {.uri="/gamepad.js", .method=HTTP_GET, .handler=gamepad_script};
     const httpd_uri_t status_uri = {.uri="/status", .method=HTTP_GET, .handler=status};
@@ -464,6 +512,7 @@ static void start_server(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &disconnect_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &discover_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &resume_uri));
+    ESP_ERROR_CHECK(ws_control_start(server, status_build));
 }
 void app_main(void)
 {
@@ -471,6 +520,7 @@ void app_main(void)
     if((err == ESP_ERR_NVS_NO_FREE_PAGES) || (err == ESP_ERR_NVS_NEW_VERSION_FOUND))
     { ESP_LOGE(TAG, "NVS requires maintenance; refusing to erase it automatically"); return; }
     ESP_ERROR_CHECK(err);
+    status_led_start();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(network_config_start());

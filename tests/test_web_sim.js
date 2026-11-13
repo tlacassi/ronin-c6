@@ -24,6 +24,7 @@ let serverBattery = null;
 let serverSleeping = null;
 const sleepRequests = [];
 let online = true;
+let statusRequests = 0;
 let gamepads = [];
 function element(name) {
   return elements[name] || (elements[name] = {
@@ -52,7 +53,9 @@ function fetch(url, options) {
   if(url === '/zoom'||url.startsWith('/zoom/')) {zoomRequests.push({url,body:options.body,session:Number(options.headers['X-Ronin-Session'])});return Promise.resolve({ok:serverReady&&serverControls&&serverZoom.available});}
   if(url === '/presets') return Promise.resolve({ok:true, json:async()=>serverPresets});
   if(url.startsWith('/preset/')) {commandOrder.push('preset:'+options.body); presetRequests.push({url,body:options.body}); return Promise.resolve({ok:true}); }
+  if(url === '/status') statusRequests++;
   if(url === '/status') return Promise.resolve({ok:true, json:async()=>({ble:serverReady,protocolVerified:serverVerified,controlEnabled:serverControls,session:serverSession,battery:serverBattery,pose:serverPose,zoom:serverZoom,sleeping:serverSleeping})});
+  if(url === '/led') return Promise.resolve({ok:true, json:async()=>({brightness:8})});
   if(url === '/sleep') {sleepRequests.push({body:options.body,session:Number(options.headers['X-Ronin-Session'])});return Promise.resolve({ok:true});}
   if(url === '/move') {
     let session = Number(options.headers['X-Ronin-Session']);
@@ -309,6 +312,98 @@ localStorage.setItem=()=>{throw new Error('storage unavailable')};
 element('#zoomInvert').onclick();flush();
 check(element('#zoomInvert').attributes['aria-pressed']==='true'&&element('#zoomStatus').textContent.includes('75.0'),'toggle works without persistent storage');
 
+// ---- WebSocket transport: push state, session-bound commands, safe switch to HTTP ----
+localStorage.getItem=key=>preferences[key]??null;localStorage.setItem=(key,value)=>{preferences[key]=value};preferences['ronin.zoomInverted']='0';
+intervals.length=0;moves.length=0;zoomRequests.length=0;commandOrder.length=0;
+online=true;serverReady=true;serverVerified=true;serverControls=true;serverSession=42;serverSleeping=null;gamepads=[];deferNextMove=false;
+const realNow=Date.now;let skew=0;Date.now=()=>realNow()+skew;
+globalThis.location={protocol:'http:',host:'ronin.test'};
+const sockets=[];
+class FakeWebSocket{
+  constructor(url){this.url=url;this.readyState=0;this.sent=[];this.bufferedAmount=0;sockets.push(this)}
+  send(text){if(this.readyState!==1)throw new Error('not open');this.sent.push(text)}
+  close(){if(this.readyState===3)return;this.readyState=3;if(this.onclose)this.onclose({})}
+  open(){this.readyState=1;if(this.onopen)this.onopen({})}
+  recv(text){if(this.onmessage)this.onmessage({data:text})}
+  drop(){this.readyState=3;if(this.onclose)this.onclose({})}
+}
+globalThis.WebSocket=FakeWebSocket;
+const pushState=(over={})=>'s'+JSON.stringify(Object.assign({ble:true,protocolVerified:true,controlEnabled:true,battery:80,session:serverSession,
+  zoom:{present:true,calibrated:true,position:2000,available:true,moving:false,target:2000,error:''}},over));
+eval(pageScript);flush();
+tick(500);
+check(sockets.length===1&&sockets[0].url==='ws://ronin.test/ws','page opens the /ws socket');
+let ws1=sockets[0];
+check(!element('#wsStatus').textContent.includes('WebSocket'),'no WebSocket label until the socket is open');
+ws1.open();flush();
+ws1.recv(pushState());flush();
+check(ws1.sent.includes('h42'),'hello carries the session from the pushed state');
+check(element('#status').textContent.includes('BLE connecté'),'pushed state drives the UI');
+ws1.recv('r1');flush();
+check(element('#wsStatus').textContent.includes('WebSocket'),'controller label');
+let polled=statusRequests;tick(1000);check(statusRequests===polled,'fresh push replaces /status polling');
+ws1.recv(pushState());
+// Commands travel over the socket and not over HTTP while controller.
+gamepads=[simulatedPad(0,0,false)];tick(100);gamepads=[simulatedPad(1,0,true)];tick(100);
+check(ws1.sent.includes('m300,0')&&moves.length===0,'motion goes over the socket');
+element('#zoomPosition').oninput({target:{value:'1000'}});flush();
+check(ws1.sent.some(m=>/^z1000,[0-9]+$/.test(m))&&zoomRequests.length===0,'zoom goes over the socket');
+tick(500);check(ws1.sent.includes('k'),'zoom keepalive goes over the socket');
+element('#zoomStop').onclick();flush();check(ws1.sent.includes('x'),'zoom stop goes over the socket');
+// Heartbeat and RTT
+tick(500);const ping=ws1.sent.filter(m=>m[0]==='p').pop();check(/^p[0-9]+$/.test(ping),'client sends timestamped pings');
+ws1.recv('o'+ping.slice(1));flush();check(/RTT [0-9]+ ms/.test(element('#wsStatus').textContent),'RTT is displayed');
+ws1.recv('o'+'4294967295');ws1.recv('oabc');flush();check(element('#wsStatus').textContent.includes('WebSocket'),'garbage pong ignored');
+// Socket lost while the trigger is held: stop over HTTP, no parasitic motion, re-arm required.
+let before=moves.length;
+ws1.drop();flush();
+check(moves.length===before+1&&moves[moves.length-1].body==='0,0','socket loss sends an HTTP stop');
+check(element('#wsStatus').textContent==='Liaison : HTTP','label falls back to HTTP');
+tick(100);tick(100);check(moves.length===before+1,'no motion after the switch while the trigger is still held');
+gamepads=[simulatedPad(0,0,false)];tick(100);gamepads=[simulatedPad(1,0,true)];tick(100);
+check(moves[moves.length-1].body==='300,0','HTTP motion resumes only after release and recenter');
+gamepads=[simulatedPad(0,0,false)];tick(100);
+// Reconnection with backoff
+const opened=sockets.length;tick(500);check(sockets.length===opened,'no immediate reconnect');
+skew+=600;tick(500);check(sockets.length===opened+1,'reconnects after the first backoff');
+sockets[sockets.length-1].drop();skew+=600;tick(500);check(sockets.length===opened+1,'backoff grows');
+skew+=600;tick(500);check(sockets.length===opened+2,'reconnects after the longer backoff');
+const ws3=sockets[sockets.length-1];skew+=5000;tick(500);check(ws3.readyState===3,'handshake that never completes is abandoned');
+// Observer: read-only, commands stay on HTTP
+skew+=20000;tick(500);const ws4=sockets[sockets.length-1];ws4.open();ws4.recv(pushState());ws4.recv('r0');flush();
+check(element('#wsStatus').textContent.includes('lecture seule'),'observer label');
+before=moves.length;gamepads=[simulatedPad(1,0,true)];tick(100);
+check(moves.length>before&&!ws4.sent.some(m=>m[0]==='m'),'observer keeps using HTTP for commands');
+gamepads=[simulatedPad(0,0,false)];tick(100);
+// Session change: hello again, and no socket commands until granted for the new session
+skew+=3000;ws4.recv('r1');flush();
+check(ws4.sent.filter(m=>m[0]==='h').length>=1,'hello sent');
+serverSession=50;skew+=1500;ws4.recv(pushState({session:50}));flush();
+check(ws4.sent.includes('h50'),'new session triggers a new hello');
+gamepads=[simulatedPad(0,0,false)];tick(100);before=moves.length;const socketMoves=ws4.sent.filter(m=>m[0]==='m').length;gamepads=[simulatedPad(1,0,true)];tick(100);
+check(moves.length>before&&ws4.sent.filter(m=>m[0]==='m').length===socketMoves,'HTTP carries motion until the hello is granted');
+gamepads=[simulatedPad(0,0,false)];tick(100);
+ws4.recv('r1');flush();
+// Server-side refusals
+ws4.recv('esess');flush();check(element('#wsStatus').textContent.includes('WebSocket'),'session error keeps the socket');
+ws4.recv('ebad');flush();check(element('#wsStatus').textContent==='Liaison : HTTP','protocol error drops the socket');
+// Heartbeat loss degrades, stops, and falls back
+skew+=20000;tick(500);const ws5=sockets[sockets.length-1];ws5.open();ws5.recv(pushState({session:50}));ws5.recv('r1');flush();
+ws5.sent.length=0;ws5.recv('r1');
+gamepads=[simulatedPad(0,0,false)];tick(100);gamepads=[simulatedPad(1,0,true)];tick(100);
+before=moves.length;skew+=3000;tick(500);
+check(element('#wsStatus').textContent.includes('dégradée'),'missing heartbeat is shown');
+check(moves.length>before&&moves[moves.length-1].body==='0,0','degraded link stops motion over HTTP');
+tick(100);tick(100);check(moves[moves.length-1].body==='0,0','held trigger does not move a degraded link');
+skew+=4000;tick(500);check(ws5.readyState===3,'dead heartbeat closes the socket');
+// Stale push falls back to HTTP polling
+skew+=20000;tick(500);const ws6=sockets[sockets.length-1];ws6.open();ws6.recv(pushState({session:50}));flush();
+polled=statusRequests;skew+=2000;tick(1000);check(statusRequests>polled,'stale push resumes /status polling');
+// Hidden page releases the socket and does not reconnect until visible again
+const hiddenCount=sockets.length;document.hidden=true;events['document.visibilitychange']();flush();
+check(ws6.readyState===3,'hidden page closes the socket');skew+=20000;tick(500);check(sockets.length===hiddenCount,'no reconnect while hidden');
+document.hidden=false;events['document.visibilitychange']();tick(500);check(sockets.length===hiddenCount+1,'reconnect when visible again');
+Date.now=realNow;
 
 check(!/expérimental|en essai|aux essais|pour essais/.test(readFile('main/index.html')), 'no experimental UI labels');
 print('Web and gamepad simulation passed');

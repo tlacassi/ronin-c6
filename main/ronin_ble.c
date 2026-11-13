@@ -68,6 +68,17 @@ static void zoom_task(void *arg);
 static telemetry_pose_format_t latest_pose_format = TELEMETRY_POSE_NONE;
 static uint32_t rx_notifications = 0u, rx_frames = 0u, rx_poses = 0u;
 static int32_t last_disconnect_reason = 0;
+static int64_t link_start_us = 0;
+/* A link that has not finished GATT setup (command characteristic and telemetry
+   subscription) within this time is dropped so that discovery can restart. */
+#define LINK_SETUP_TIMEOUT_US 4000000
+/* Abandon a connection attempt quickly when the gimbal stopped advertising. */
+#define CONNECT_TIMEOUT_MS 4000
+/* Keep the default 2.56 s supervision timeout: after a hard ESP reset the gimbal keeps the
+   dead link, and does not advertise again, until this timeout expires. */
+static const struct ble_gap_conn_params conn_params = {
+    .scan_itvl = 16, .scan_window = 16, .itvl_min = 24, .itvl_max = 40,
+    .latency = 0, .supervision_timeout = 256, .min_ce_len = 0, .max_ce_len = 0};
 static void scan(void);
 static int gap_event(struct ble_gap_event *event, void *arg);
 static int service_cb(uint16_t ch, const struct ble_gatt_error *error, const struct ble_gatt_svc *svc, void *arg);
@@ -121,6 +132,10 @@ static void trace_drain(void)
 #endif
 
 static bool control_allowed_locked(void)
+{
+    return (target_model == RONIN_MODEL_RS3) || (target_model == RONIN_MODEL_RS4_PRO);
+}
+static bool sleep_supported_locked(void)
 {
     return (target_model == RONIN_MODEL_RS3) || (target_model == RONIN_MODEL_RS4_PRO);
 }
@@ -457,7 +472,7 @@ bool ronin_ble_sleep_state(bool *value)
     if(value == NULL) { return false; }
     int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&lock);
-    bool valid = (target_model == RONIN_MODEL_RS3) && link_matches_target_locked() &&
+    bool valid = sleep_supported_locked() && link_matches_target_locked() &&
                  (sleep_session == link_session) && (sleep_time_us != 0) &&
                  ((now - sleep_time_us) <= 10000000);
     if(valid) { *value = sleeping; }
@@ -469,7 +484,7 @@ bool ronin_ble_set_sleep(uint32_t session, bool sleep)
     uint16_t ch = 0u, handle = 0u;
     int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&lock);
-    bool ok = (target_model == RONIN_MODEL_RS3) && link_matches_target_locked() &&
+    bool ok = sleep_supported_locked() && link_matches_target_locked() &&
               (write_handle != 0u) && (session == link_session) &&
               (sleep_session == session) && (sleep_time_us != 0) &&
               ((now - sleep_time_us) <= 10000000) && (sleeping != sleep) &&
@@ -484,7 +499,7 @@ bool ronin_ble_set_sleep(uint32_t session, bool sleep)
     uint8_t frame[16] = {0};
     duml_sleep(frame, 0u, sleep);
     portENTER_CRITICAL(&lock);
-    bool current = (target_model == RONIN_MODEL_RS3) && link_matches_target_locked() &&
+    bool current = sleep_supported_locked() && link_matches_target_locked() &&
                    (conn == ch) && (write_handle == handle) && (link_session == session);
     portEXIT_CRITICAL(&lock);
     return current && (ble_gattc_write_no_rsp_flat(ch, handle, frame, sizeof(frame)) == 0);
@@ -717,7 +732,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         {
             int rc = ble_gap_disc_cancel();
             if(rc == 0)
-            { rc = ble_gap_connect(own_addr_type, &event->disc.addr, 10000, NULL, gap_event, NULL); }
+            { rc = ble_gap_connect(own_addr_type, &event->disc.addr, CONNECT_TIMEOUT_MS, &conn_params, gap_event, NULL); }
             if(rc != 0)
             {
                 portENTER_CRITICAL(&lock); connecting = false; portEXIT_CRITICAL(&lock);
@@ -742,6 +757,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             connected_addr = connecting_addr;
             connected_addr_valid = true;
             write_handle = 0u;
+            link_start_us = esp_timer_get_time();
             link_session++;
             requested_yaw = 0;
             requested_pitch = 0;
@@ -827,7 +843,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                 {
                     int64_t now = esp_timer_get_time();
                     portENTER_CRITICAL(&lock);
-                    if((target_model == RONIN_MODEL_RS3) && link_matches_target_locked())
+                    if(sleep_supported_locked() && link_matches_target_locked())
                     {
                         sleeping = telemetry_parser.sleeping;
                         sleep_time_us = now;
@@ -902,6 +918,7 @@ static void control_task(void *arg)
     uint32_t poll_session = 0u;
     uint32_t motion_session = 0u;
     int64_t last_poll_us = 0;
+    int64_t last_watchdog_us = 0;
     bool was_moving = false;
     for(;;)
     {
@@ -978,6 +995,22 @@ static void control_task(void *arg)
             bool retry_scan = host_synced && !connecting && (conn == BLE_HS_CONN_HANDLE_NONE);
             portEXIT_CRITICAL(&lock);
             if(retry_scan && !ble_gap_disc_active()) { scan(); }
+        }
+        /* Watchdog: a half-open link (MTU, discovery or CCCD write that never answered)
+           would otherwise block every reconnection forever. */
+        {
+            portENTER_CRITICAL(&lock);
+            uint16_t stalled_conn = conn;
+            bool setup_done = (write_handle != 0u) && ((notify_handle == 0u) || telemetry_subscribed);
+            bool stalled = (conn != BLE_HS_CONN_HANDLE_NONE) && connected_addr_valid && !setup_done &&
+                           (link_start_us != 0) && ((now - link_start_us) > LINK_SETUP_TIMEOUT_US);
+            portEXIT_CRITICAL(&lock);
+            if(stalled && ((now - last_watchdog_us) > 2000000))
+            {
+                last_watchdog_us = now;
+                int rc = ble_gap_terminate(stalled_conn, BLE_ERR_REM_USER_CONN_TERM);
+                ESP_LOGW(TAG, "BLE setup stalled; dropping the link (rc=%d)", rc);
+            }
         }
 #if CONFIG_RONIN_BLE_TRACE
         trace_drain();

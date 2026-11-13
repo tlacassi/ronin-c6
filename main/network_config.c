@@ -9,6 +9,7 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 #include "ronin_ble.h"
 
@@ -18,6 +19,40 @@ static portMUX_TYPE gs_sLock = portMUX_INITIALIZER_UNLOCKED;
 static bool gs_bReconnect = true;
 static int gs_iDisconnectReason = 0;
 static esp_netif_t *gs_psStation = NULL;
+static esp_timer_handle_t gs_hRetryTimer = NULL;
+static unsigned gs_uAttempt = 0u;
+static bool gs_bLinkUp = false;
+
+/* Retrying at full speed while the network is absent keeps the radio scanning
+   and starves the BLE link on the shared 2.4 GHz front end. Back off, but stay quick. */
+static void vNETWORK_RetryExpired(void *p_pArg)
+{
+    (void)p_pArg;
+    portENTER_CRITICAL(&gs_sLock);
+    bool l_bReconnect = gs_bReconnect;
+    portEXIT_CRITICAL(&gs_sLock);
+    if(l_bReconnect)
+    {
+        (void)esp_wifi_connect();
+    }
+}
+
+static void vNETWORK_ScheduleRetry(void)
+{
+    static const uint32_t l_au32DelayMs[] = {200u, 1000u, 2000u, 4000u, 6000u};
+    unsigned l_uIndex = (gs_uAttempt < (sizeof(l_au32DelayMs) / sizeof(l_au32DelayMs[0]))) ?
+                        gs_uAttempt : ((sizeof(l_au32DelayMs) / sizeof(l_au32DelayMs[0])) - 1u);
+    gs_uAttempt++;
+    if(gs_hRetryTimer != NULL)
+    {
+        (void)esp_timer_stop(gs_hRetryTimer);
+        (void)esp_timer_start_once(gs_hRetryTimer, (uint64_t)l_au32DelayMs[l_uIndex] * 1000u);
+    }
+    else
+    {
+        (void)esp_wifi_connect();
+    }
+}
 
 static void vNETWORK_Event(void *p_pArg, esp_event_base_t p_sBase, int32_t p_i32Id, void *p_pData)
 {
@@ -29,11 +64,21 @@ static void vNETWORK_Event(void *p_pArg, esp_event_base_t p_sBase, int32_t p_i32
         gs_iDisconnectReason = l_psEvent->reason;
         bool l_bReconnect = gs_bReconnect;
         portEXIT_CRITICAL(&gs_sLock);
-        ronin_ble_invalidate();
+        /* Only a lost link invalidates BLE sessions; failed attempts do not. */
+        if(gs_bLinkUp)
+        {
+            gs_bLinkUp = false;
+            ronin_ble_invalidate();
+        }
         if(l_bReconnect)
         {
-            (void)esp_wifi_connect();
+            vNETWORK_ScheduleRetry();
         }
+    }
+    else if((p_sBase == WIFI_EVENT) && (p_i32Id == WIFI_EVENT_STA_CONNECTED))
+    {
+        gs_bLinkUp = true;
+        gs_uAttempt = 0u;
     }
     else if((p_sBase == WIFI_EVENT) && (p_i32Id == WIFI_EVENT_STA_START))
     {
@@ -43,6 +88,14 @@ static void vNETWORK_Event(void *p_pArg, esp_event_base_t p_sBase, int32_t p_i32
             (void)esp_wifi_connect();
         }
     }
+}
+
+bool network_config_connected(void)
+{
+    wifi_ap_record_t l_sAP = {0};
+    esp_netif_ip_info_t l_sIP = {0};
+    return (gs_psStation != NULL) && (esp_wifi_sta_get_ap_info(&l_sAP) == ESP_OK) &&
+           (esp_netif_get_ip_info(gs_psStation, &l_sIP) == ESP_OK) && (l_sIP.ip.addr != 0u);
 }
 
 static void vNETWORK_Reply(cJSON *p_psRequest)
@@ -83,6 +136,8 @@ static void vNETWORK_Reply(cJSON *p_psRequest)
             gs_iDisconnectReason = 0;
             portEXIT_CRITICAL(&gs_sLock);
             ronin_ble_invalidate();
+            if(gs_hRetryTimer != NULL) { (void)esp_timer_stop(gs_hRetryTimer); }
+            gs_uAttempt = 0u;
             esp_err_t l_eResult = esp_wifi_stop();
             if(l_eResult == ESP_OK)
             {
@@ -197,6 +252,8 @@ esp_err_t network_config_start(void)
     {
         return ESP_ERR_NO_MEM;
     }
+    const esp_timer_create_args_t l_sTimer = {.callback = vNETWORK_RetryExpired, .name = "wifi_retry"};
+    ESP_RETURN_ON_ERROR(esp_timer_create(&l_sTimer, &gs_hRetryTimer), "network", "Retry timer failed");
     wifi_init_config_t l_sInit = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&l_sInit), "network", "Wi-Fi init failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_FLASH), "network", "Wi-Fi storage failed");

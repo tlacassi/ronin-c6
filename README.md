@@ -67,6 +67,14 @@ cc -std=c11 -Wall -Wextra -Werror -Imain tests/test_preset_data.c main/preset_da
 /tmp/ronin-preset-test
 ```
 
+Mise à jour du firmware dans l'app macOS (Swift + faux serveur de releases local) :
+
+```sh
+swiftc -parse-as-library tests/test_firmware_store.swift macos/Sources/FirmwareUpdater.swift -o /tmp/ronin-fw-test
+python3 tests/firmware_server.py > /tmp/ronin-fw-port & sleep 1
+/tmp/ronin-fw-test "$(head -1 /tmp/ronin-fw-port)"; kill %1
+```
+
 La trame capturée de référence valide les CRC ; le test couvre également l'encodage des valeurs signées. Cela ne valide ni le BLE ni le mouvement. Voir `NOTICE` et `LICENSE.upstream` pour l'attribution.
 
 La reconnexion BLE relance la recherche dès la déconnexion et vérifie périodiquement que le scan est actif. Une coupure efface la consigne côté ESP et invalide la session des commandes. La page doit recevoir la nouvelle session avant de piloter de nouveau. Un ordre déjà transmis au contrôleur BLE au moment d’une coupure ne peut pas être rétracté ; les arrêts et reprises restent à vérifier sur le matériel. Le comportement réel, y compris les pertes Wi-Fi/BLE simultanées et la résolution mDNS, reste à vérifier sur le matériel.
@@ -90,5 +98,40 @@ L'option ESP-IDF `Ronin bridge > Trace received DUML frames over the local seria
 Le format de position diffère entre les deux appareils essayés : RS 3 utilise les tags 22/23/24 de 04/66, RS 4 Pro pousse passivement 04/05 avec une charge de 49 octets. Le décodeur Pro accepte uniquement la longueur, le sens et les plages capturés, avec CRC valide ; il ne réutilise pas la position RS 3 pour le Pro. Tilt, roll et pan proviennent respectivement des entiers signés aux décalages 20, 22 et 4 du payload. Le champ historique de tilt au décalage 0 donnait environ ±180° caméra de niveau et provoquait un rappel vers le bas ; le roll historique au décalage 2 restait près de zéro malgré une inclinaison réelle. Les champs 20/22 sont également décrits dans cette [capture indépendante de Gimbal.State](https://github.com/cybersecua/dji/blob/main/DUMLmap/DUMLmap.py), sur un autre matériel DJI ; les essais locaux du Pro restent la référence pour ce port.
 
 Les consignes Pro conservent le pan et le roll, mais inversent le signe du tilt avant l'encodage 04/14. Un essai isolé non corrigé avec cible filaire +3° a donné −3° ; après correction, la cible affichée −6° a été mesurée à −6°, sans variation notable du pan/roll. Un rappel complet court a aussi atteint ce tilt, avec une coupure/reprise BLE pendant l'essai. Le roll cible 0° a été mesuré vers −0,5° : aucune compensation fixe ni correction automatique supplémentaire n'est appliquée. Ces observations ne qualifient pas encore les rappels sur toute la plage mécanique ni après manipulation de la poignée. Les anciens presets Pro sont écartés par la version RSP3 et doivent être réenregistrés ; aucune conversion approximative ni suppression NVS automatique n'est faite. Les presets RS 3 sont conservés.
+
+## WebSocket de contrôle (`/ws`)
+
+Le joystick, le zoom et l'état passent par une WebSocket quand elle est disponible ; toutes les routes HTTP (`/move`, `/status`, `/zoom*`, `/preset*`, …) restent actives et servent de repli automatique. Presets, veille, réglage LED et appairage restent en HTTP.
+
+**Format** (`main/ws_protocol.c`, sans dépendance ESP-IDF) : une trame texte = une lettre + une charge, 64 octets au plus. Le texte réutilise les parseurs stricts des corps HTTP (`motion_parse`, `zoom_parse`), donc mêmes bornes (±600, 0–4095, vitesse 1–100), sans cJSON ni allocation sur le chemin des commandes, et se lit tel quel dans les outils du navigateur. Le JSON aurait coûté 3 à 4 fois plus d'octets par commande et un second parseur à durcir.
+
+| Client → ESP | Rôle |
+|---|---|
+| `h<session>` | s'attache à la session BLE courante (la même valeur que `X-Ronin-Session`) |
+| `m<x>,<y>` | consigne joystick |
+| `z<position>,<vitesse>` · `x` · `k` | zoom, arrêt du zoom, renouvellement du bail |
+| `p<ms>` | ping horodaté |
+
+| ESP → client | Rôle |
+|---|---|
+| `s<json>` | état, strictement le corps de `GET /status`, poussé toutes les 250 ms (remplace le polling à 1 Hz) |
+| `o<ms>` | pong : écho de l'horodatage, la page en déduit le RTT |
+| `r1` / `r0` | pilote / observateur en lecture seule |
+| `e<code>` | `bad`, `role`, `sess`, `link`, `zoom`, `busy` |
+
+**Arrêt sûr.** Une seule socket pilote (`ws_arbiter.c`) ; les autres sont observateurs et ne peuvent pas commander. Une socket doit envoyer `h<session>` avec la session courante, puis `ronin_ble_*` revalide cette session à chaque commande. Fermeture de la socket (y compris purge LRU, car toute fermeture passe par `close_fn`), erreur de lecture, trame invalide, hors bornes, binaire, fragmentée ou trop longue : `ronin_ble_stop()` et arrêt du zoom, puis fermeture. Si le pilote ne donne plus signe de vie pendant 2,5 s, la consigne et le zoom sont arrêtés ; au-delà de 6 s, toute socket muette est fermée. Le watchdog de 400 ms et le bail de zoom de 1,5 s restent actifs quel que soit l'état de la socket.
+
+**Origin.** Au handshake, `Origin` doit être `http://` suivi du même hôte que `Host` ; une valeur absente, `null` ou étrangère est refusée (anti cross-site WebSocket hijacking). Esp-idf envoie le `101` avant d'appeler le gestionnaire : une page étrangère voit donc l'ouverture suivie d'une fermeture immédiate, sans qu'aucune commande ne soit jamais acceptée. Les clients non navigateur doivent envoyer `Origin`. Aucune authentification n'est ajoutée ici, et rien ne la rend plus difficile : le contrôle d'accès pourra s'ajouter au handshake et dans `hello`.
+
+**Limites.** 3 sockets WebSocket au maximum (1 pilote, 2 observateurs), prises sur les 7 sockets du serveur ; une 4e reçoit `ebusy` et est fermée. Les pages en WebSocket n'utilisent plus `/status` ni `/move`, ce qui allège la saturation connue. L'envoi d'état se fait depuis une tâche dédiée (`httpd_ws_send_frame_async`) ; un client bloqué est fermé. Une page observatrice ou en repli commande par HTTP, qui reste sans arbitrage comme avant.
+
+**Page.** Elle ouvre `/ws` si le navigateur le permet, affiche « Liaison : WebSocket · RTT n ms », passe en « Liaison dégradée — repli HTTP » si les pong manquent plus de 2,5 s (RTT > 250 ms en avertissement), et se reconnecte avec un délai croissant (0,5 s à 8 s). À chaque bascule ou perte, elle arrête la consigne et le zoom, puis exige que le joystick ou la gâchette L2 soit relâché et recentré avant de reprendre. Elle ferme la socket quand l'onglet est masqué.
+
+**Relais** (`tools/ronin_proxy.py`) : il relaie aussi `/ws`, toujours en bibliothèque standard. Sans cela, le cas d'usage du relais (manette en contexte sécurisé) retomberait toujours en HTTP. Il vérifie `Host` et `Origin` côté navigateur, présente à l'ESP sa propre autorité comme `Host` et `Origin`, puis relaie les octets sans analyser les trames ; fermer un côté ferme l'autre, donc l'ESP arrête le mouvement. 3 relais simultanés au maximum.
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror -Imain tests/test_ws_protocol.c main/ws_protocol.c main/ws_arbiter.c main/motion_parse.c -o /tmp/ronin-ws-test
+/tmp/ronin-ws-test
+```
 
 Le serveur HTTP ferme la connexion la moins récente lorsqu'il atteint sa limite de sockets pour rester accessible avec plusieurs pages de pilotage ouvertes.
