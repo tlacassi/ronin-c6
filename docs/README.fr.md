@@ -36,7 +36,7 @@ Puis ouvrir **http://127.0.0.1:8765/** et laisser le terminal ouvert. Si le nom 
 
 ## Application macOS
 
-**ESP Ronin Control 2** est autonome : firmware générique, outils de flash Intel/Apple Silicon et runtimes sont embarqués dans le `.app`. La configuration du Wi‑Fi se fait par USB et reste sur l’ESP, sans projet ni ESP-IDF à installer sur le Mac utilisateur. Voir [macos/README.md](macos/README.md) pour l’utilisation et la reconstruction par un mainteneur.
+**ESP Ronin Control 2** est autonome : firmware générique, outils de flash Intel/Apple Silicon et runtimes sont embarqués dans le `.app`. La configuration du Wi‑Fi se fait par USB et reste sur l’ESP, sans projet ni ESP-IDF à installer sur le Mac utilisateur. Voir [macos/README.md](../macos/README.md) pour l’utilisation et la reconstruction par un mainteneur.
 
 ## Zoom avec le Focus Pro Motor
 
